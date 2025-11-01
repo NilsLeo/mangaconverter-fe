@@ -64,13 +64,14 @@ export async function fetchWithLicense(url: string, options: RequestInit = {}): 
 /**
  * Ensure a license key is available.
  * @param force If true, always request a new license key from the server.
+ * @param retries Number of retry attempts for server errors (default: 3)
  */
-export async function ensureLicenseKey(force = false): Promise<string> {
+export async function ensureLicenseKey(force = false, retries = 3): Promise<string> {
   // This function should only be used in the browser
   if (typeof window === 'undefined') {
     throw new Error('ensureLicenseKey should only be called in browser context');
   }
-  
+
   // Check localStorage first (unless forced)
   const existingKey = getLicenseKey();
   if (existingKey && !force) {
@@ -78,26 +79,64 @@ export async function ensureLicenseKey(force = false): Promise<string> {
     return existingKey;
   }
   log(force ? 'Forcing license key refresh' : 'No license key, requesting new one', { force });
-  // Request a new license key
+
+  // Request a new license key with retry logic
   const registerUrl = new URL('/api/register', window.location.origin).toString();
-  const url = `${registerUrl}?t=${Date.now()}`;
-  log(`Registering license at URL`, { url });
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache',
-      Expires: '0',
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to register for a license key: ${response.status}`);
+
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const url = `${registerUrl}?t=${Date.now()}`;
+      log(`Registering license at URL (attempt ${attempt + 1}/${retries + 1})`, { url });
+
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+        },
+      });
+
+      if (!response.ok) {
+        // If it's a 500 error and we have retries left, retry
+        if (response.status >= 500 && attempt < retries) {
+          const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff: 1s, 2s, 4s
+          log(`Server error (${response.status}), retrying in ${waitTime}ms...`, { attempt, retries });
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        }
+        throw new Error(`Failed to register for a license key: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!data.license_key) {
+        throw new Error('No license key received from server');
+      }
+
+      setLicenseKey(data.license_key);
+      log(`License key stored in localStorage`, { license_key: data.license_key });
+      return data.license_key;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // If it's a network error and we have retries left, retry
+      if (attempt < retries && (error instanceof TypeError || lastError.message.includes('500'))) {
+        const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff
+        log(`License registration error, retrying in ${waitTime}ms...`, {
+          error: lastError.message,
+          attempt: attempt + 1,
+          maxRetries: retries + 1
+        });
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      // No more retries, throw the error
+      throw lastError;
+    }
   }
-  const data = await response.json();
-  if (!data.license_key) {
-    throw new Error('No license key received from server');
-  }
-  setLicenseKey(data.license_key);
-  log(`License key stored in localStorage`, { license_key: data.license_key });
-  return data.license_key;
+
+  // If we get here, all retries failed
+  throw lastError || new Error('Failed to register for a license key after multiple attempts');
 }
