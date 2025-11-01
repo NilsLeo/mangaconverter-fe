@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    /* Replaced purple with neutral gray */
+    --primary: 222.2 47.4% 11.2%;
+    --primary-rgb: 23, 37, 42;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    /* Replaced purple accent with neutral */
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    /* Replaced purple ring with neutral */
+    --ring: 222.2 47.4% 11.2%;
+
+    --radius: 0.5rem;
+
+    --warning: 0 0% 100%;
+    --warning-foreground: 222.2 84% 4.9%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Replaced purple with neutral gray for dark mode */
+    --primary: 210 40% 98%;
+    --primary-rgb: 241, 245, 249;
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    /* Replaced purple accent with neutral for dark mode */
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    /* Replaced purple ring with neutral for dark mode */
+    --ring: 210 40% 98%;
+
+    --warning: 0 0% 100%;
+    --warning-foreground: 222.2 84% 4.9%;
+  }
+
+  /* Comic theme - changed from blue to comic book yellow */
+  .comic-theme {
+    --primary: 45 98% 54%;
+    --primary-rgb: 253, 184, 19;
+    --primary-foreground: 0 0% 0%;
+
+    --accent: 45 93% 58%;
+    --accent-foreground: 0 0% 0%;
+
+    --ring: 45 98% 54%;
+  }
+
+  .dark .comic-theme {
+    --primary: 45 98% 54%;
+    --primary-rgb: 253, 184, 19;
+    --primary-foreground: 0 0% 0%;
+
+    --accent: 45 93% 58%;
+    --accent-foreground: 0 0% 0%;
+
+    --ring: 45 98% 54%;
+  }
+
+  /* Manga theme - traditional Japanese crimson red */
+  .manga-theme {
+    --primary: 0 72% 51%;
+    --primary-rgb: 220, 38, 38;
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 0 0% 9%;
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 0 72% 51%;
+  }
+
+  .dark .manga-theme {
+    --primary: 0 72% 51%;
+    --primary-rgb: 220, 38, 38;
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 0 0% 15%;
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 0 72% 51%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .animate-pulse-glow {
+    animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}

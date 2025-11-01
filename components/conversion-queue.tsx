@@ -1,0 +1,644 @@
+"use client"
+
+import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Loader2, FileText, AlertTriangle, X, Download, Play, XCircle, Settings } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
+import { motion } from "framer-motion"
+import { useState, useEffect } from "react"
+import type { PendingUpload, AdvancedOptionsType } from "./manga-converter"
+import { Checkbox } from "@/components/ui/checkbox"
+import { fetchWithLicense } from "@/lib/utils"
+import { log, logError, logWarn, logDebug } from "@/lib/logger"
+import { toast } from "sonner"
+
+interface ConversionQueueProps {
+  pendingUploads: PendingUpload[]
+  isConverting: boolean
+  onConvert: () => void
+  onConvertSingle?: (file: PendingUpload) => void
+  onCancelJob?: (file: PendingUpload) => void
+  selectedProfile: string
+  globalAdvancedOptions?: AdvancedOptionsType
+  onReorder?: (newOrder: PendingUpload[]) => void
+  showAsUploadedFiles?: boolean
+  onRemoveFile?: (file: PendingUpload) => void
+  onDismissJob?: (file: PendingUpload) => void
+  uploadProgress?: number
+  conversionProgress?: number
+  isUploaded?: boolean
+  eta?: number
+  remainingTime?: number
+  currentStatus?: string
+  selectedFiles?: Set<string>
+  onToggleFileSelection?: (fileName: string) => void
+  onSelectAll?: () => void
+  onClearSelection?: () => void
+  onUpdateSelectedFiles?: (deviceProfile?: string, advancedOptions?: Partial<AdvancedOptionsType>) => void
+  deviceProfiles?: Record<string, string>
+  onAddMoreFiles?: () => void
+  onNeedsConfiguration?: () => void
+  onConfigureFile?: (file: PendingUpload) => void
+}
+
+export function ConversionQueue({
+  pendingUploads,
+  isConverting,
+  onConvert,
+  onConvertSingle,
+  onCancelJob,
+  selectedProfile,
+  globalAdvancedOptions,
+  onReorder,
+  showAsUploadedFiles = false,
+  onRemoveFile,
+  onDismissJob,
+  uploadProgress = 0,
+  conversionProgress = 0,
+  isUploaded = false,
+  eta,
+  remainingTime,
+  currentStatus,
+  selectedFiles = new Set(),
+  onToggleFileSelection,
+  onSelectAll,
+  onClearSelection,
+  onUpdateSelectedFiles,
+  deviceProfiles = {},
+  onAddMoreFiles,
+  onNeedsConfiguration,
+  onConfigureFile,
+}: ConversionQueueProps) {
+  const [items, setItems] = useState(pendingUploads)
+  const [downloadingFiles, setDownloadingFiles] = useState<Record<string, boolean>>({})
+  const [pulsatingConfigFile, setPulsatingConfigFile] = useState<string | null>(null)
+  const [dynamicEta, setDynamicEta] = useState<number | undefined>(eta)
+  const [dynamicRemainingTime, setDynamicRemainingTime] = useState<number | undefined>(remainingTime)
+  const [startingFiles, setStartingFiles] = useState<Set<string>>(new Set())
+  const [initialRemainingTime, setInitialRemainingTime] = useState<number | undefined>(undefined)
+  const [uploadEta, setUploadEta] = useState<number | undefined>(undefined)
+  const [lastUploadProgress, setLastUploadProgress] = useState<number>(0)
+  const [lastUploadTime, setLastUploadTime] = useState<number>(Date.now())
+
+  useEffect(() => {
+    if (JSON.stringify(items) !== JSON.stringify(pendingUploads)) {
+      setItems(pendingUploads)
+    }
+  }, [pendingUploads])
+
+  // Update dynamic ETA when prop changes
+  useEffect(() => {
+    if (eta !== undefined && currentStatus === "QUEUED") {
+      // Only capture the INITIAL value when first entering QUEUED
+      // After that, ignore all backend updates and let frontend countdown handle it
+      if (!dynamicEta) {
+        setDynamicEta(eta)
+      }
+      // Backend sends the same initial value repeatedly, so we ignore all subsequent updates
+    }
+  }, [eta, currentStatus, dynamicEta])
+
+  // Update dynamic remaining time when prop changes
+  useEffect(() => {
+    if (remainingTime !== undefined && currentStatus === "PROCESSING") {
+      // Only capture the INITIAL value when first entering PROCESSING
+      // After that, ignore all backend updates and let frontend countdown handle it
+      if (!initialRemainingTime) {
+        setInitialRemainingTime(remainingTime)
+        setDynamicRemainingTime(remainingTime)
+      }
+      // Backend sends the same initial value repeatedly, so we ignore all subsequent updates
+    }
+  }, [remainingTime, currentStatus, initialRemainingTime])
+
+  // Countdown timer for ETA (QUEUED status)
+  useEffect(() => {
+    if (currentStatus === "QUEUED") {
+      const interval = setInterval(() => {
+        setDynamicEta((prev) => {
+          if (prev === undefined || prev <= 1) return 1
+          return prev - 1
+        })
+      }, 1000)
+
+      return () => clearInterval(interval)
+    }
+  }, [currentStatus])
+
+  // Countdown timer for remaining time (PROCESSING status)
+  useEffect(() => {
+    if (currentStatus === "PROCESSING") {
+      const interval = setInterval(() => {
+        setDynamicRemainingTime((prev) => {
+          if (prev === undefined || prev <= 1) return 1
+          return prev - 1
+        })
+      }, 1000)
+
+      return () => clearInterval(interval)
+    }
+  }, [currentStatus])
+
+  // Reset when status changes
+  useEffect(() => {
+    if (currentStatus === "COMPLETE") {
+      setDynamicEta(undefined)
+      setDynamicRemainingTime(undefined)
+      setInitialRemainingTime(undefined)
+      setUploadEta(undefined)
+      setLastUploadProgress(0)
+    }
+
+    // Reset PROCESSING-specific state when leaving PROCESSING
+    if (currentStatus !== "PROCESSING") {
+      setInitialRemainingTime(undefined)
+      setDynamicRemainingTime(undefined)
+    }
+
+    // Reset QUEUED-specific state when leaving QUEUED
+    if (currentStatus !== "QUEUED") {
+      setDynamicEta(undefined)
+    }
+
+    // Reset UPLOADING-specific state when leaving UPLOADING
+    if (currentStatus !== "UPLOADING") {
+      setUploadEta(undefined)
+      setLastUploadProgress(0)
+      setLastUploadTime(Date.now())
+    }
+  }, [currentStatus])
+
+  // Calculate upload ETA based on upload speed
+  useEffect(() => {
+    if (currentStatus === "UPLOADING" && uploadProgress !== undefined && uploadProgress > 0) {
+      const now = Date.now()
+      const progressDelta = uploadProgress - lastUploadProgress
+      const timeDelta = (now - lastUploadTime) / 1000 // Convert to seconds
+
+      if (progressDelta > 0 && timeDelta > 0) {
+        // Calculate speed in percentage per second
+        const speedPerSecond = progressDelta / timeDelta
+        // Calculate remaining time
+        const remainingProgress = 100 - uploadProgress
+        const estimatedSeconds = remainingProgress / speedPerSecond
+
+        setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
+        setLastUploadProgress(uploadProgress)
+        setLastUploadTime(now)
+      }
+    }
+  }, [uploadProgress, currentStatus])
+
+  const isJobRunning = (file: PendingUpload) => {
+    return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
+  }
+
+  // Clean up starting files when they become running jobs
+  useEffect(() => {
+    const runningJobFiles = pendingUploads.filter(file => isJobRunning(file)).map(file => file.name)
+    if (runningJobFiles.length > 0) {
+      setStartingFiles(prev => {
+        const newSet = new Set(prev)
+        runningJobFiles.forEach(fileName => newSet.delete(fileName))
+        return newSet
+      })
+    }
+  }, [pendingUploads])
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return "0 Bytes"
+    const k = 1024
+    const sizes = ["Bytes", "KB", "MB", "GB"]
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+  }
+
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) {
+      // Ensure we never show less than 1s
+      const displaySeconds = Math.max(1, Math.round(seconds))
+      return `${displaySeconds}s`
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60)
+      const remainingSeconds = Math.round(seconds % 60)
+      // If we have remaining seconds, ensure they're at least 1
+      if (remainingSeconds > 0) {
+        const displaySeconds = Math.max(1, remainingSeconds)
+        return `${minutes}m ${displaySeconds}s`
+      }
+      return `${minutes}m`
+    } else {
+      const hours = Math.floor(seconds / 3600)
+      const minutes = Math.floor((seconds % 3600) / 60)
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+    }
+  }
+
+  const getStatusBadge = (file: PendingUpload, index: number) => {
+    if (file.isConverted) {
+      return (
+        <Badge
+          variant="secondary"
+          className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+        >
+          Complete
+        </Badge>
+      )
+    }
+
+    if (file.error) {
+      return (
+        <Badge variant="destructive" className="uppercase text-xs font-medium">
+          Error
+        </Badge>
+      )
+    }
+
+    if (selectedProfile === "Placeholder" && !isConverting) {
+      return (
+        <Badge
+          variant="secondary"
+          className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+        >
+          Needs Configuring
+        </Badge>
+      )
+    }
+
+    if (isConverting && index === 0) {
+      switch (currentStatus) {
+        case "UPLOADING":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+            >
+              Uploading
+            </Badge>
+          )
+        case "QUEUED":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-white/10 text-white dark:text-white border-white/20"
+            >
+              READING FILE
+            </Badge>
+          )
+        case "PROCESSING":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+            >
+              Processing
+            </Badge>
+          )
+        case "COMPLETE":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20"
+            >
+              Finished
+            </Badge>
+          )
+        default:
+          return (
+            <Badge variant="secondary" className="uppercase text-xs font-medium">
+              Waiting
+            </Badge>
+          )
+      }
+    }
+
+    return (
+      <Badge variant="secondary" className="uppercase text-xs font-medium bg-muted">
+        Ready
+      </Badge>
+    )
+  }
+
+  const getProgressInfo = (file: PendingUpload, index: number) => {
+    if (!isConverting || index !== 0 || currentStatus === "COMPLETE") {
+      return null
+    }
+
+    switch (currentStatus) {
+      case "UPLOADING":
+        const safeUploadProgress = Math.max(0, Math.min(100, uploadProgress || 0))
+        return {
+          progress: safeUploadProgress,
+          label: `Uploading - ${Math.round(safeUploadProgress)}%`,
+          showProgress: true,
+        }
+
+      case "QUEUED":
+        return {
+          progress: 0,
+          label: "Reading File",
+          showProgress: false,
+        }
+
+      case "PROCESSING":
+        const safeConversionProgress = Math.max(0, Math.min(100, conversionProgress || 0))
+        const processingProgress = initialRemainingTime && dynamicRemainingTime
+          ? Math.max(0, Math.min(100, ((initialRemainingTime - dynamicRemainingTime) / initialRemainingTime) * 100))
+          : safeConversionProgress
+        return {
+          progress: processingProgress,
+          label: dynamicRemainingTime ? `${formatTime(dynamicRemainingTime)} remaining` : "Processing",
+          showProgress: true,
+        }
+
+      default:
+        return null
+    }
+  }
+
+  const hasCustomSettings = (file: PendingUpload) => {
+    return file.deviceProfile !== undefined || file.advancedOptions !== undefined
+  }
+
+  const downloadFile = async (file: PendingUpload) => {
+    if (!file.downloadId) return
+
+    try {
+      setDownloadingFiles((prev) => ({ ...prev, [file.name]: true }))
+
+      const response = await fetchWithLicense(`/api/download/${file.downloadId}`)
+      if (!response.ok) {
+        const errText = await response.text()
+        throw new Error(errText || "Failed to get download URL")
+      }
+      const data = await response.json()
+      if (!data.signedUrl) {
+        throw new Error(data.error || "No download URL returned")
+      }
+      window.location.href = data.signedUrl
+      toast.success(`Downloading ${file.convertedName || file.name}`)
+    } catch (error) {
+      logError("Download error", file.downloadId, { error: error.message, fileName: file.name })
+      toast.error("Download failed", {
+        description: error instanceof Error ? error.message : "Failed to download file",
+      })
+    } finally {
+      setTimeout(() => {
+        setDownloadingFiles((prev) => ({ ...prev, [file.name]: false }))
+      }, 1000)
+    }
+  }
+
+  const handleDisabledButtonClick = () => {
+    if (selectedProfile === "Placeholder" && onNeedsConfiguration) {
+      onNeedsConfiguration()
+      toast.warning("Configuration required", {
+        description: "Please configure your device settings before starting conversion.",
+      })
+    }
+  }
+
+  const handlePerJobStartClick = (file: PendingUpload) => {
+    const needsConfig = selectedProfile === "Placeholder"
+
+    if (needsConfig) {
+      setPulsatingConfigFile(file.name)
+      setTimeout(() => setPulsatingConfigFile(null), 3000)
+
+      handleDisabledButtonClick()
+    } else if (onConvertSingle) {
+      // Mark file as starting
+      setStartingFiles(prev => new Set(prev).add(file.name))
+      onConvertSingle(file)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.map((file, index) => {
+        const progressInfo = getProgressInfo(file, index)
+        const isActive = isConverting && index === 0
+        const isSelected = selectedFiles.has(file.name)
+        const customSettings = hasCustomSettings(file)
+        const jobRunning = isJobRunning(file)
+        const needsConfig = selectedProfile === "Placeholder"
+        const shouldPulsate = pulsatingConfigFile === file.name
+        const isStarting = startingFiles.has(file.name)
+
+        return (
+          <motion.div
+            key={file.name + index}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.05 }}
+          >
+            <Card
+              className={`${file.error ? "border-destructive/40 bg-destructive/5" : ""} ${isActive ? "border-primary/40" : ""} ${isSelected ? "border-primary/60 bg-primary/5" : ""} ${file.isConverted ? "border-green-500/40 bg-green-500/5" : ""}`}
+            >
+              <div className="p-4">
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
+                  {onToggleFileSelection && !isActive && !file.isConverted && (
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => onToggleFileSelection(file.name)}
+                      className="mt-1 md:mt-0"
+                    />
+                  )}
+
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="rounded-md p-2 bg-muted/50 flex-shrink-0">
+                      <FileText className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium truncate text-sm">
+                          {file.isConverted && file.convertedName ? file.convertedName : file.name}
+                        </p>
+                        {customSettings && !file.isConverted && (
+                          <Badge variant="outline" className="text-xs">
+                            Custom
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {file.isConverted ? (
+                          <>
+                            {file.inputFileSize && file.outputFileSize && (
+                              <>
+                                <span>
+                                  {formatFileSize(file.inputFileSize)} → {formatFileSize(file.outputFileSize)}
+                                </span>
+                                <span>•</span>
+                              </>
+                            )}
+                            {file.actualDuration && (
+                              <>
+                                <span>{formatTime(file.actualDuration)}</span>
+                                <span>•</span>
+                              </>
+                            )}
+                            {file.deviceProfile && deviceProfiles[file.deviceProfile] && (
+                              <span>{deviceProfiles[file.deviceProfile]}</span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span>{formatFileSize(file.size)}</span>
+                            {file.deviceProfile && deviceProfiles[file.deviceProfile] && (
+                              <>
+                                <span>•</span>
+                                <span>{deviceProfiles[file.deviceProfile]}</span>
+                              </>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    {file.error ? (
+                      <div className="flex items-center gap-2 text-sm text-destructive">
+                        <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                        <span className="truncate">{file.error}</span>
+                      </div>
+                    ) : progressInfo ? (
+                      <div className="flex items-center gap-3 flex-1">
+                        {getStatusBadge(file, index)}
+                        <span className="text-sm text-muted-foreground">{progressInfo.label}</span>
+                      </div>
+                    ) : (
+                      getStatusBadge(file, index)
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {file.isConverted && file.downloadId && (
+                      <Button
+                        onClick={() => downloadFile(file)}
+                        disabled={downloadingFiles[file.name]}
+                        size="sm"
+                        className="shadow-sm"
+                      >
+                        {downloadingFiles[file.name] ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Download className="h-4 w-4 mr-2" />
+                            Download
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    {jobRunning && onCancelJob && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => {
+                          log("[v0] Cancel button clicked for job:", file.jobId)
+                          onCancelJob(file)
+                        }}
+                        className="shadow-sm"
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Cancel
+                      </Button>
+                    )}
+
+                    {!file.isConverted && !file.error && !jobRunning && onConfigureFile && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onConfigureFile(file)}
+                        className={`shadow-sm ${shouldPulsate ? "animate-pulse border-primary bg-primary/10" : ""}`}
+                        title="Configure this file"
+                      >
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    )}
+
+                    {!file.isConverted && !file.error && !jobRunning && onConvertSingle && (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => handlePerJobStartClick(file)}
+                        disabled={isStarting}
+                        className={`shadow-sm ${
+                          needsConfig
+                            ? "bg-yellow-500/30 hover:bg-yellow-500/40 text-yellow-900 dark:text-yellow-100 cursor-not-allowed"
+                            : isStarting
+                              ? "opacity-70 cursor-not-allowed"
+                              : ""
+                        }`}
+                      >
+                        {isStarting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Waiting
+                          </>
+                        ) : (
+                          <>
+                            <Play className="h-4 w-4 mr-2" />
+                            Start
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    {isActive && currentStatus === "PROCESSING" && (
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    )}
+
+                    {!isActive && !file.error && !jobRunning && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => onRemoveFile?.(file)}
+                        className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
+                        title="Delete"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    )}
+
+                    {file.error && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => onDismissJob?.(file)}
+                        className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
+                        title="Delete"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {progressInfo?.showProgress && (
+                  <div className="mt-3 w-full">
+                    <Progress value={progressInfo.progress} className="h-1.5" />
+                  </div>
+                )}
+              </div>
+            </Card>
+          </motion.div>
+        )
+      })}
+
+      {onAddMoreFiles && (
+        <Button
+          variant="outline"
+          onClick={onAddMoreFiles}
+          disabled={isConverting}
+          className="w-full h-12 border-dashed hover:border-primary hover:bg-primary/5 bg-transparent"
+        >
+          <FileText className="mr-2 h-4 w-4" />
+          Add more files
+        </Button>
+      )}
+    </div>
+  )
+}
