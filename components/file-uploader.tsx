@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { motion } from "framer-motion"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+import { validateFileExtension, UnsupportedFileFormatError } from "@/lib/fileValidation"
 
 interface FileUploaderProps {
   onFilesSelected: (files: File[]) => void
@@ -52,14 +53,21 @@ export function FileUploader({
       const files = Array.from(e.dataTransfer.files)
 
       const validExtensionFiles = files.filter((file) => {
-        const extension = "." + file.name.split(".").pop()?.toLowerCase()
-        return acceptedTypes.includes(extension)
+        try {
+          validateFileExtension(file.name)
+          return true
+        } catch (error) {
+          if (error instanceof UnsupportedFileFormatError) {
+            toast.error("Invalid file", {
+              description: error.message,
+            })
+            return false
+          }
+          throw error
+        }
       })
 
       if (validExtensionFiles.length === 0) {
-        toast.error("No valid files found", {
-          description: `Please upload files with these extensions: ${acceptedTypes.join(", ")}`,
-        })
         return
       }
 
@@ -84,7 +92,28 @@ export function FileUploader({
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files)
 
-      const validSizeFiles = files.filter((file) => {
+      // Validate file extensions first
+      const validExtensionFiles = files.filter((file) => {
+        try {
+          validateFileExtension(file.name)
+          return true
+        } catch (error) {
+          if (error instanceof UnsupportedFileFormatError) {
+            toast.error("Invalid file", {
+              description: error.message,
+            })
+            return false
+          }
+          throw error
+        }
+      })
+
+      if (validExtensionFiles.length === 0) {
+        return
+      }
+
+      // Then validate file sizes
+      const validSizeFiles = validExtensionFiles.filter((file) => {
         if (file.size > maxFileSize) {
           toast.error(`File too large: ${file.name}`, {
             description: `Maximum file size is ${formatFileSize(maxFileSize)}`,

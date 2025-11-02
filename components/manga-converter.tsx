@@ -16,6 +16,7 @@ import type { ConvertedFileInfo } from "./converted-files" // Removed ConvertedF
 import { LoaderIcon, Settings, Clock, ChevronsRight } from "lucide-react"
 import { AdvancedOptions } from "./advanced-options"
 import { FileUploader } from "./file-uploader"
+import { ALL_SUPPORTED_EXTENSIONS } from "@/lib/fileValidation"
 import { DeviceSelector } from "./device-selector"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -836,12 +837,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         // Wait for job ID to be available
         let waitCount = 0
         log("Waiting for job ID from upload initiation", {
-          maxWaitTime: "15 seconds",
           filename: currentFile.name,
         })
 
-        while (!jobId && waitCount < 150) {
-          // Wait up to 15 seconds (allows for session refresh which can take ~9s)
+        while (!jobId) {
+          // Wait for job ID (no timeout - will wait as long as needed)
           await new Promise((resolve) => setTimeout(resolve, 100))
           waitCount++
 
@@ -852,15 +852,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               filename: currentFile.name,
             })
           }
-        }
-
-        if (!jobId) {
-          logError("Job ID not received after 15 seconds", {
-            waitCount,
-            filename: currentFile.name,
-            uploadPromiseStarted: !!uploadPromise,
-          })
-          throw new Error("Failed to get job ID - upload may have failed or timed out")
         }
 
         log("Job ID received successfully", jobId, {
@@ -1458,7 +1449,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               <FileUploader
                 onFilesSelected={handleFileUpload}
                 disabled={isConverting}
-                acceptedTypes={[".cbz", ".zip", ".cbr", ".rar", ".pdf"]}
+                acceptedTypes={ALL_SUPPORTED_EXTENSIONS}
                 maxFiles={MAX_FILES}
                 contentType={contentType}
               />
