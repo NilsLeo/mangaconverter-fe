@@ -61,7 +61,8 @@
     "vaul": "^0.9.9",
     "zod": "3.25.76",
     "framer-motion": "12.23.24",
-    "canvas-confetti": "1.9.3"
+    "canvas-confetti": "1.9.3",
+    "@clerk/nextjs": "6.34.1"
   },
   "devDependencies": {
     "@types/node": "^22",

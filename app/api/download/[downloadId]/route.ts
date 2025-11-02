@@ -18,15 +18,15 @@ export async function GET(
     log(`API route: Received download request for ID: ${downloadId}`);
     // Determine API base URL
     const apiBaseUrl = process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060";
-    // Require license key from client request header
-    const licenseKey = request.headers.get("X-License-Key");
-    if (!licenseKey) {
+    // Require session key from client request header
+    const sessionKey = request.headers.get("X-Session-Key");
+    if (!sessionKey) {
       return NextResponse.json(
-        { success: false, error: "No license key provided" },
+        { success: false, error: "No session key provided" },
         { status: 401 }
       );
     }
-    log(`API route: Using license key from header: ${licenseKey}`);
+    log(`API route: Using session key from header: ${sessionKey}`);
     const downloadUrl = `${apiBaseUrl}/download/${downloadId}`;
     log(`API route: Using API base URL: ${apiBaseUrl}`);
     log(`API route: Forwarding download request to: ${downloadUrl}`);
@@ -37,7 +37,7 @@ export async function GET(
         method: "GET",
         headers: {
           Accept: "*/*",
-          "X-License-Key": licenseKey,
+          "X-Session-Key": sessionKey,
         },
         redirect: "manual",
       });

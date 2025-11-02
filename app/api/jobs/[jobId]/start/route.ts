@@ -4,10 +4,10 @@ import { log, logError } from "@/lib/logger"
 export async function PATCH(request: NextRequest, context: { params: { jobId: string } }) {
   try {
     const { jobId } = await context.params
-    const licenseKey = request.headers.get("X-License-Key")
+    const sessionKey = request.headers.get("X-Session-Key")
 
-    if (!licenseKey) {
-      return NextResponse.json({ error: "No license key provided" }, { status: 401 })
+    if (!sessionKey) {
+      return NextResponse.json({ error: "No session key provided" }, { status: 401 })
     }
 
     const apiBaseUrl = process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL
@@ -21,7 +21,7 @@ export async function PATCH(request: NextRequest, context: { params: { jobId: st
     const statusCheckRes = await fetch(`${apiBaseUrl}/status/${jobId}`, {
       method: "GET",
       headers: {
-        "X-License-Key": licenseKey,
+        "X-Session-Key": sessionKey,
       },
     })
 
@@ -47,14 +47,14 @@ export async function PATCH(request: NextRequest, context: { params: { jobId: st
 
     log("Frontend API: Calling backend to start job", jobId, {
       backend_url: `${apiBaseUrl}/jobs/${jobId}/start`,
-      has_license_key: !!licenseKey,
+      has_session_key: !!sessionKey,
     })
 
     const res = await fetch(`${apiBaseUrl}/jobs/${jobId}/start`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "X-License-Key": licenseKey,
+        "X-Session-Key": sessionKey,
       },
     })
 

@@ -8,11 +8,15 @@ import { DynamicTitle } from "@/components/dynamic-title"
 import { StructuredData } from "@/components/structured-data"
 import { Navbar } from "@/components/navbar"
 import { useConverterMode } from "@/contexts/converter-mode-context"
+import { useSession } from "@/hooks/use-session"
 
 const HomePage: FC = () => {
   const { mode } = useConverterMode()
   const contentType = mode === "manga" ? "manga" : "comic"
   const themeClass = mode === "manga" ? "manga-theme" : "comic-theme"
+
+  // Initialize session management (handles both anonymous and authenticated users)
+  useSession()
 
   return (
     <div className={`min-h-screen bg-background flex flex-col ${themeClass}`}>

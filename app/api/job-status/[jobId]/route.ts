@@ -13,10 +13,10 @@ export async function GET(request: NextRequest, context: { params: { jobId: stri
       console.error("API_BASE_URL or NEXT_PUBLIC_API_URL environment variable is not set")
       return NextResponse.json({ error: "Backend API URL not configured" }, { status: 500 })
     }
-    // Require license key from client request header
-    const licenseKey = request.headers.get("X-License-Key")
-    if (!licenseKey) {
-      return NextResponse.json({ success: false, error: "No license key provided" }, { status: 401 })
+    // Require session key from client request header
+    const sessionKey = request.headers.get("X-Session-Key")
+    if (!sessionKey) {
+      return NextResponse.json({ success: false, error: "No session key provided" }, { status: 401 })
     }
     // Call the backend API to check job status
     const statusUrl = `${apiBaseUrl}/status/${jobId}`
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest, context: { params: { jobId: stri
       method: "GET",
       headers: {
         Accept: "application/json",
-        "X-License-Key": licenseKey,
+        "X-Session-Key": sessionKey,
       },
     })
 

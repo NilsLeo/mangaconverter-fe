@@ -13,9 +13,9 @@ export async function POST(
     return NextResponse.json({ error: "Backend API URL not configured" }, { status: 500 })
   }
 
-  const licenseKey = request.headers.get("X-License-Key")
-  if (!licenseKey) {
-    return NextResponse.json({ success: false, error: "No license key provided" }, { status: 401 })
+  const sessionKey = request.headers.get("X-Session-Key")
+  if (!sessionKey) {
+    return NextResponse.json({ success: false, error: "No session key provided" }, { status: 401 })
   }
 
   try {
@@ -24,7 +24,7 @@ export async function POST(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-License-Key": licenseKey,
+        "X-Session-Key": sessionKey,
       },
     })
 

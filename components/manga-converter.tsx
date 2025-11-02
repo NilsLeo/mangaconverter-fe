@@ -8,7 +8,7 @@ import { uploadFileAndConvert } from "@/lib/uploadFileAndConvert" // make sure y
 import { ConversionQueue } from "./conversion-queue"
 import { Footer } from "./footer"
 import { DEVICE_PROFILES } from "@/lib/device-profiles"
-import { fetchWithLicense, ensureLicenseKey } from "@/lib/utils"
+import { fetchWithLicense, ensureSessionKey } from "@/lib/utils"
 import { log, logError, logWarn, logDebug } from "@/lib/logger"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -317,13 +317,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    // Initialize license key on page load to avoid delays during first conversion
+    // Initialize session key on page load to avoid delays during first conversion
     const initializeLicense = async () => {
       try {
-        await ensureLicenseKey()
-        log("License key initialized on page load")
+        await ensureSessionKey()
+        log("Session key initialized on page load")
       } catch (error) {
-        logWarn("Failed to initialize license key on page load:", error)
+        logWarn("Failed to initialize session key on page load:", error)
         // Don't show error toast on page load - we'll handle it during conversion
       }
     }
@@ -693,7 +693,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    // License key is already initialized on page load, no need to call ensureLicenseKey() here
+    // Session key is already initialized on page load, no need to call ensureSessionKey() here
 
     // Prevent duplicate conversion requests
     if (isConverting) {
@@ -733,7 +733,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       })
 
       try {
-        const licenseKey = await ensureLicenseKey()
+        const sessionKey = await ensureSessionKey()
 
         // Reset progress states for this file
         setUploadProgress(0)
@@ -795,7 +795,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         try {
           uploadPromise = uploadFileAndConvert(
             currentFile.file,
-            licenseKey,
+            sessionKey,
             fileDeviceProfile, // Use per-file device profile
             convertAdvancedOptionsToBackend(fileAdvancedOptions), // Use per-file advanced options
             // Upload progress callback for real-time UI updates
@@ -841,7 +841,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         })
 
         while (!jobId && waitCount < 150) {
-          // Wait up to 15 seconds (allows for license refresh which can take ~9s)
+          // Wait up to 15 seconds (allows for session refresh which can take ~9s)
           await new Promise((resolve) => setTimeout(resolve, 100))
           waitCount++
 
@@ -1174,7 +1174,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    // License key is already initialized on page load, no need to call ensureLicenseKey() here
+    // Session key is already initialized on page load, no need to call ensureSessionKey() here
 
     // Create a temporary conversion queue with just this file
     const tempQueue = [file]

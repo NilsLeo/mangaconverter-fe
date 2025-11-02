@@ -4,10 +4,10 @@ import { log, logError } from "@/lib/logger"
 export async function POST(request: NextRequest, context: { params: { jobId: string } }) {
   try {
     const { jobId } = await context.params
-    const licenseKey = request.headers.get("X-License-Key")
+    const sessionKey = request.headers.get("X-Session-Key")
 
-    if (!licenseKey) {
-      return NextResponse.json({ error: "No license key provided" }, { status: 401 })
+    if (!sessionKey) {
+      return NextResponse.json({ error: "No session key provided" }, { status: 401 })
     }
 
     const apiBaseUrl = process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest, context: { params: { jobId: str
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-License-Key": licenseKey,
+        "X-Session-Key": sessionKey,
       },
     })
 

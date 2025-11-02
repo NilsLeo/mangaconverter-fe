@@ -3,7 +3,7 @@ import { log, logError, logDebug } from "@/lib/logger";
 
 export async function GET(request: NextRequest) {
   try {
-    log("API route: Received license registration request");
+    log("API route: Received session registration request");
 
     // Log all environment variables for debugging
     logDebug("Environment variables", {
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const apiUrl = process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060";
     log(`API route: Using API URL: ${apiUrl}`);
 
-    // Call the backend API to register a new license
+    // Call the backend API to register a new session
     const registerUrl = `${apiUrl}/register`;
     log(`API route: Registering at: ${registerUrl}`);
 
@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
       );
     }
   } catch (error) {
-    logError("Error during license registration:", error);
+    logError("Error during session registration:", error);
 
     return NextResponse.json(
       {

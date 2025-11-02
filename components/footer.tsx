@@ -33,7 +33,7 @@ export function Footer() {
               >
                 Kindle Comic Converter (KCC)
               </a>
-              . Licensed under ISC License.
+              . Licensed under ISC Session.
             </p>
             <p className="text-xs mt-2">
               © 2012-2025 Ciro Mattia Gonano

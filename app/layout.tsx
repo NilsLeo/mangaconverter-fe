@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "sonner"
 import { ConverterModeProvider } from "@/contexts/converter-mode-context"
 import { ErrorBoundary } from "@/components/error-boundary"
+import { ClerkProvider } from "@clerk/nextjs"
 
 const mplus = M_PLUS_Rounded_1c({
   weight: ["400", "700", "800"],
@@ -92,36 +93,38 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <head>
-        {/* Favicon and icons */}
-        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-        <link rel="alternate icon" href="/favicon.ico" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-        <link rel="manifest" href="/manifest.json" />
+    <ClerkProvider dynamic>
+      <html lang="en" suppressHydrationWarning>
+        <head>
+          {/* Favicon and icons */}
+          <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+          <link rel="alternate icon" href="/favicon.ico" />
+          <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+          <link rel="manifest" href="/manifest.json" />
 
-        {/* Additional SEO meta tags */}
-        <link rel="alternate" href="https://comicconverter.com" />
-        <meta name="application-name" content="Manga & Comic Converter" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="Manga & Comic Converter" />
-        <meta name="format-detection" content="telephone=no" />
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="msapplication-TileColor" content="#8b5cf6" />
-        <meta name="msapplication-tap-highlight" content="no" />
-        <meta name="theme-color" content="#8b5cf6" />
-      </head>
-      <body className={`${mplus.variable} ${kosugiMaru.variable} ${zenMaruGothic.variable} antialiased`}>
-        <ErrorBoundary>
-          <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-            <ConverterModeProvider>
-              {children}
-              <Toaster />
-            </ConverterModeProvider>
-          </ThemeProvider>
-        </ErrorBoundary>
-      </body>
-    </html>
+          {/* Additional SEO meta tags */}
+          <link rel="alternate" href="https://comicconverter.com" />
+          <meta name="application-name" content="Manga & Comic Converter" />
+          <meta name="apple-mobile-web-app-capable" content="yes" />
+          <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+          <meta name="apple-mobile-web-app-title" content="Manga & Comic Converter" />
+          <meta name="format-detection" content="telephone=no" />
+          <meta name="mobile-web-app-capable" content="yes" />
+          <meta name="msapplication-TileColor" content="#8b5cf6" />
+          <meta name="msapplication-tap-highlight" content="no" />
+          <meta name="theme-color" content="#8b5cf6" />
+        </head>
+        <body className={`${mplus.variable} ${kosugiMaru.variable} ${zenMaruGothic.variable} antialiased`}>
+          <ErrorBoundary>
+            <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+              <ConverterModeProvider>
+                {children}
+                <Toaster />
+              </ConverterModeProvider>
+            </ThemeProvider>
+          </ErrorBoundary>
+        </body>
+      </html>
+    </ClerkProvider>
   )
 }

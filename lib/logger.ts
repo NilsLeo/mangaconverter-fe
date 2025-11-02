@@ -102,7 +102,7 @@ class MangaConverterLogger {
 
   private getUserId(): string | null {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("license_key")
+      return localStorage.getItem("session_key")
     }
     return null
   }

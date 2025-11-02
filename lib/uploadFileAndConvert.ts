@@ -1,4 +1,4 @@
-import { ensureLicenseKey } from "@/lib/utils" // you already have this
+import { ensureSessionKey } from "@/lib/utils" // you already have this
 import { log, logError, logWarn, logDebug } from "./logger"
 
 // Track active jobs to prevent duplicates
@@ -36,7 +36,7 @@ export function abortUpload(jobId: string): boolean {
 async function uploadFileInChunks(
   file: File,
   jobId: string,
-  licenseKey: string,
+  sessionKey: string,
   fileKey: string,
   onProgress: (progress: number) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
@@ -91,7 +91,7 @@ async function uploadFileInChunks(
       const response = await fetch(`${apiUrl}/jobs/${jobId}/upload-chunk`, {
         method: 'POST',
         headers: {
-          'X-License-Key': licenseKey
+          'X-Session-Key': sessionKey
         },
         body: formData,
         signal: abortController.signal
@@ -156,7 +156,7 @@ async function uploadFileInChunks(
 
 export async function uploadFileAndConvert(
   file: File,
-  licenseKey: string,
+  sessionKey: string,
   deviceProfile?: string,
   advancedOptions?: Record<string, any>,
   onUploadProgress?: (progress: number) => void,
@@ -205,7 +205,7 @@ export async function uploadFileAndConvert(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-License-Key": currentLicenseKey,
+          "X-Session-Key": currentLicenseKey,
         },
         body: JSON.stringify({
           filename: file.name,
@@ -222,25 +222,25 @@ export async function uploadFileAndConvert(
           if (errorData.error) {
             errorMessage = errorData.error
 
-            // Handle 401 - Invalid license key
-            if (jobRes.status === 401 && errorData.error.includes("Invalid license key")) {
-              logWarn("Invalid license key (401), removing from localStorage and obtaining new license", {
+            // Handle 401 - Invalid session key
+            if (jobRes.status === 401 && errorData.error.includes("Invalid session key")) {
+              logWarn("Invalid session key (401), removing from localStorage and obtaining new session", {
                 error: errorData.error
               })
-              localStorage.removeItem("mangaconverter_license_key")
+              localStorage.removeItem("mangaconverter_session_key")
 
-              // Obtain new license and retry
-              const newLicenseKey = await ensureLicenseKey(true)
-              log("New license obtained, retrying job creation", {
+              // Obtain new session and retry
+              const newLicenseKey = await ensureSessionKey(true)
+              log("New session obtained, retrying job creation", {
                 hasNewLicense: !!newLicenseKey
               })
 
-              // Retry the request with new license
+              // Retry the request with new session
               const retryRes = await fetch("/api/jobs", {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  "X-License-Key": newLicenseKey,
+                  "X-Session-Key": newLicenseKey,
                 },
                 body: JSON.stringify({
                   filename: file.name,
@@ -251,23 +251,23 @@ export async function uploadFileAndConvert(
               })
 
               if (!retryRes.ok) {
-                const retryError = await retryRes.json().catch(() => ({ error: "Failed to create job after license refresh" }))
-                throw new Error(retryError.error || `Failed to create job after license refresh (HTTP ${retryRes.status})`)
+                const retryError = await retryRes.json().catch(() => ({ error: "Failed to create job after session refresh" }))
+                throw new Error(retryError.error || `Failed to create job after session refresh (HTTP ${retryRes.status})`)
               }
 
               const retryData = await retryRes.json()
-              log(`[${new Date().toISOString()}] POST /jobs response received after license refresh for job: ${retryData.job_id}`)
+              log(`[${new Date().toISOString()}] POST /jobs response received after session refresh for job: ${retryData.job_id}`)
               log(`[TIMING] Job creation with retry took ${(performance.now() - jobCreateStart).toFixed(2)}ms`)
 
-              // Update the outer licenseKey variable
-              licenseKey = newLicenseKey
+              // Update the outer sessionKey variable
+              sessionKey = newLicenseKey
 
               return retryData
             }
           }
         } catch (error) {
           // If this is our retry error, throw it
-          if (error instanceof Error && error.message.includes("license refresh")) {
+          if (error instanceof Error && error.message.includes("session refresh")) {
             throw error
           }
           // Otherwise, use the default message
@@ -281,20 +281,20 @@ export async function uploadFileAndConvert(
       return jobData
     }
 
-    let jobData = await createJob(licenseKey)
+    let jobData = await createJob(sessionKey)
 
-    // Handle invalid license key
-    if (jobData.error === "Invalid license key. Please register first.") {
-      logWarn("Invalid license key, refreshing", jobData.job_id)
-      const newLicenseKey = await ensureLicenseKey(true)
-      licenseKey = newLicenseKey
+    // Handle invalid session key
+    if (jobData.error === "Invalid session key. Please register first.") {
+      logWarn("Invalid session key, refreshing", jobData.job_id)
+      const newLicenseKey = await ensureSessionKey(true)
+      sessionKey = newLicenseKey
 
-      jobData = await createJob(licenseKey)
+      jobData = await createJob(sessionKey)
 
       if (jobData.error) {
-        throw new Error("Failed to create job after refreshing license")
+        throw new Error("Failed to create job after refreshing session")
       }
-      log(`[${new Date().toISOString()}] POST /jobs response received after license refresh for job: ${jobData.job_id}`)
+      log(`[${new Date().toISOString()}] POST /jobs response received after session refresh for job: ${jobData.job_id}`)
     }
 
     // Validate jobData
@@ -318,7 +318,7 @@ export async function uploadFileAndConvert(
     // Check if job was cancelled immediately after creation (race condition)
     // This handles the case where user clicks cancel between job creation and upload start
     const statusCheckRes = await fetch(`/api/job-status/${jobData.job_id}`, {
-      headers: { "X-License-Key": licenseKey },
+      headers: { "X-Session-Key": sessionKey },
     })
     if (statusCheckRes.ok) {
       const statusData = await statusCheckRes.json()
@@ -345,7 +345,7 @@ export async function uploadFileAndConvert(
       await uploadFileInChunks(
         file,
         jobData.job_id,
-        licenseKey,
+        sessionKey,
         fileKey,
         (progress) => {
           if (onUploadProgress) {
