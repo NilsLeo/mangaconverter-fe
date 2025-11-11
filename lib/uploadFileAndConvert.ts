@@ -1,27 +1,21 @@
 import { ensureSessionKey } from "@/lib/utils" // you already have this
 import { log, logError, logWarn, logDebug } from "./logger"
+import { MultipartUploadClient } from "./MultipartUploadClient"
 
 // Track active jobs to prevent duplicates
 const activeJobs = new Set<string>()
 
-// Track active uploads for cancellation (jobId -> {xhr, fileKey, abortController})
-const activeUploads = new Map<string, { xhr?: XMLHttpRequest; fileKey: string; abortController?: AbortController }>()
+// Track active uploads for cancellation (jobId -> {fileKey, client})
+const activeUploads = new Map<string, { fileKey: string; client: MultipartUploadClient }>()
 
 // Export function to abort an active upload
 export function abortUpload(jobId: string): boolean {
   const uploadInfo = activeUploads.get(jobId)
   if (uploadInfo) {
-    log(`[UPLOAD] Aborting upload for job: ${jobId}`)
+    log(`[UPLOAD] Aborting multipart upload for job: ${jobId}`)
 
-    // Abort XHR if present (old S3 upload method)
-    if (uploadInfo.xhr) {
-      uploadInfo.xhr.abort()
-    }
-
-    // Abort fetch requests if present (new chunked upload method)
-    if (uploadInfo.abortController) {
-      uploadInfo.abortController.abort()
-    }
+    // Abort multipart upload
+    uploadInfo.client.abortUpload(jobId)
 
     activeUploads.delete(jobId)
     // Also remove from activeJobs to allow re-upload
@@ -32,8 +26,8 @@ export function abortUpload(jobId: string): boolean {
   return false
 }
 
-// New chunked upload function
-async function uploadFileInChunks(
+// Multipart upload function (now used for ALL files)
+async function uploadFileViaMultipart(
   file: File,
   jobId: string,
   sessionKey: string,
@@ -41,111 +35,74 @@ async function uploadFileInChunks(
   onProgress: (progress: number) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
 ): Promise<void> {
-  const CHUNK_SIZE = 20 * 1024 * 1024 // 20MB chunks
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-  let uploadedBytes = 0
+  // Calculate dynamic part size: fileSize/100 for smooth progress bar
+  // But enforce S3 limits: min 5MB (except last part), max to keep parts between 1-10,000
+  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5MB (S3 minimum for all but last part)
+  const MAX_PART_SIZE = 100 * 1024 * 1024 // 100MB (reasonable maximum)
+  const TARGET_PARTS = 100 // Target 100 parts for 1% granularity
 
-  log(`[CHUNKED UPLOAD] Starting chunked upload`, {
+  let partSize = Math.floor(file.size / TARGET_PARTS)
+
+  // Enforce minimum part size (S3 requirement)
+  if (partSize < MIN_PART_SIZE && file.size > MIN_PART_SIZE) {
+    partSize = MIN_PART_SIZE
+  }
+
+  // Enforce maximum part size (prevent too large parts)
+  if (partSize > MAX_PART_SIZE) {
+    partSize = MAX_PART_SIZE
+  }
+
+  // For very small files (< 5MB), use single part
+  if (file.size < MIN_PART_SIZE) {
+    partSize = file.size
+  }
+
+  const numParts = Math.ceil(file.size / partSize)
+
+  log(`[MULTIPART UPLOAD] Starting multipart upload`, {
     job_id: jobId,
     file_name: file.name,
     file_size: file.size,
-    chunk_size: CHUNK_SIZE,
-    total_chunks: totalChunks
+    part_size: partSize,
+    num_parts: numParts,
+    progress_granularity: `${(100 / numParts).toFixed(1)}%`,
   })
 
-  // Create abort controller for cancellation
-  const abortController = new AbortController()
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
+  const client = new MultipartUploadClient(apiUrl, sessionKey, {
+    partSize: partSize
+  })
 
   // Register for cancellation
-  activeUploads.set(jobId, { fileKey, abortController })
+  activeUploads.set(jobId, { fileKey, client })
 
   try {
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-      // Check if upload was cancelled
-      if (abortController.signal.aborted) {
-        log(`[CHUNKED UPLOAD] Upload cancelled by user at chunk ${chunkIndex}`, { job_id: jobId })
-        throw new Error("Upload cancelled by user")
-      }
-
-      const start = chunkIndex * CHUNK_SIZE
-      const end = Math.min(start + CHUNK_SIZE, file.size)
-      const chunk = file.slice(start, end)
-
-      log(`[CHUNKED UPLOAD] Uploading chunk ${chunkIndex + 1}/${totalChunks}`, {
-        job_id: jobId,
-        chunk_index: chunkIndex,
-        chunk_size: chunk.size,
-        start_byte: start,
-        end_byte: end
-      })
-
-      // Create FormData with chunk
-      const formData = new FormData()
-      formData.append('chunk', chunk)
-      formData.append('chunkIndex', chunkIndex.toString())
-      formData.append('totalChunks', totalChunks.toString())
-      formData.append('fileName', file.name)
-
-      // Upload chunk directly to backend (bypass Next.js proxy to avoid buffering)
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
-      const response = await fetch(`${apiUrl}/jobs/${jobId}/upload-chunk`, {
-        method: 'POST',
-        headers: {
-          'X-Session-Key': sessionKey
-        },
-        body: formData,
-        signal: abortController.signal
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }))
-        throw new Error(errorData.error || `Chunk ${chunkIndex} upload failed`)
-      }
-
-      // Update progress
-      uploadedBytes += chunk.size
-      const progress = Math.min(100, Math.round((uploadedBytes / file.size) * 100))
-      onProgress(progress)
+    await client.uploadFile(file, jobId, (progress) => {
+      // Update local progress
+      onProgress(Math.round(progress.percentage))
 
       // Send progress via WebSocket
       if (sendUploadProgress) {
-        sendUploadProgress(jobId, uploadedBytes)
+        sendUploadProgress(jobId, progress.uploadedBytes)
       }
 
-      log(`[CHUNKED UPLOAD] Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully`, {
+      log(`[MULTIPART UPLOAD] Progress update`, {
         job_id: jobId,
-        uploaded_bytes: uploadedBytes,
-        total_bytes: file.size,
-        progress_percent: progress
+        completed_parts: progress.completedParts,
+        total_parts: progress.totalParts,
+        percentage: progress.percentage.toFixed(1),
       })
-
-      // Optional: Small delay between chunks to avoid overwhelming the server
-      // await new Promise(resolve => setTimeout(resolve, 10))
-    }
-
-    // All chunks uploaded successfully
-    log(`[CHUNKED UPLOAD] All chunks uploaded successfully`, {
-      job_id: jobId,
-      total_chunks: totalChunks,
-      total_bytes: uploadedBytes
     })
 
-    // Ensure progress shows 100%
-    onProgress(100)
-    if (sendUploadProgress) {
-      sendUploadProgress(jobId, file.size)
-    }
-
-  } catch (error) {
-    // Check if it was a user cancellation
-    if (error instanceof Error && (error.message.includes("cancelled") || error.name === "AbortError")) {
-      log(`[CHUNKED UPLOAD] Upload cancelled`, { job_id: jobId })
-      throw new Error("Upload cancelled by user")
-    }
-
-    logError(`[CHUNKED UPLOAD] Upload failed`, {
+    log(`[MULTIPART UPLOAD] Upload completed successfully`, {
       job_id: jobId,
-      error: error instanceof Error ? error.message : String(error)
+      file_name: file.name,
+    })
+  } catch (error) {
+    logError(`[MULTIPART UPLOAD] Upload failed`, {
+      job_id: jobId,
+      error: error instanceof Error ? error.message : String(error),
     })
     throw error
   } finally {
@@ -328,11 +285,11 @@ export async function uploadFileAndConvert(
       }
     }
 
-    // Step 2: Upload file in chunks to backend
-    log("Starting chunked upload", jobData.job_id, {
+    // Step 2: Upload file using multipart upload (for all files)
+    log(`Starting multipart upload`, jobData.job_id, {
       file_size: file.size,
       filename: file.name,
-      flow_step: "chunked_upload_start",
+      flow_step: "upload_start",
     })
 
     // Immediately show 1% to indicate upload has started
@@ -341,8 +298,8 @@ export async function uploadFileAndConvert(
     }
 
     try {
-      // Use chunked upload - this will automatically trigger processing when complete
-      await uploadFileInChunks(
+      // Use multipart upload for all files
+      await uploadFileViaMultipart(
         file,
         jobData.job_id,
         sessionKey,
@@ -356,15 +313,15 @@ export async function uploadFileAndConvert(
       )
 
       const totalTime = performance.now() - startTime
-      log("Chunked upload completed successfully", jobData.job_id, {
+      log(`Multipart upload completed successfully`, jobData.job_id, {
         filename: file.name,
         total_duration: totalTime,
         file_key: fileKey,
+        upload_method: "multipart",
         flow_step: "upload_complete",
       })
 
       // Return immediately - backend will automatically start processing
-      // No need to call /start endpoint - chunked upload triggers it automatically
       return {
         job_id: jobData.job_id,
         status: "QUEUED", // Backend will transition to PROCESSING
@@ -377,7 +334,7 @@ export async function uploadFileAndConvert(
         throw new Error("Upload cancelled by user")
       }
 
-      logError("Chunked upload failed", jobData.job_id, {
+      logError("Multipart upload failed", jobData.job_id, {
         error: error instanceof Error ? error.message : String(error),
       })
       throw new Error(`Upload failed: ${error instanceof Error ? error.message : String(error)}`)

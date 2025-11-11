@@ -7,6 +7,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
+import { SupportCard } from "@/components/support-card"
+import { BugReportCard } from "@/components/bug-report-card"
 
 export default function AccountPage() {
   const { user, isLoaded } = useUser()
@@ -118,6 +120,11 @@ export default function AccountPage() {
             </p>
           </CardContent>
         </Card>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+          <SupportCard />
+          <BugReportCard />
+        </div>
       </div>
     </div>
   )

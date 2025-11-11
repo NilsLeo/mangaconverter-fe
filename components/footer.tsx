@@ -2,6 +2,7 @@
 
 import { useConverterMode } from "@/contexts/converter-mode-context"
 import { BugReportCard } from "./bug-report-card"
+import { SupportCard } from "./support-card"
 
 export function Footer() {
   const { isComic } = useConverterMode()
@@ -11,8 +12,11 @@ export function Footer() {
   return (
     <footer className="mt-12 pt-8 border-t text-sm text-muted-foreground">
       <div className="space-y-6">
-        <BugReportCard />
-        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <SupportCard />
+          <BugReportCard />
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <h3 className="font-semibold mb-2">About Comic & Manga Converter</h3>
