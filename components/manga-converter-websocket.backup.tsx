@@ -20,9 +20,9 @@ import { ALL_SUPPORTED_EXTENSIONS } from "@/lib/fileValidation"
 import { DeviceSelector } from "./device-selector"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { useJobWebSocket, type JobStatus } from "@/hooks/useJobWebSocket"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { useConverterMode } from "@/contexts/converter-mode-context"
-import { useQueuePolling, type QueueJob } from "@/hooks/useQueuePolling"
 
 export type PendingUpload = {
   name: string
@@ -41,19 +41,6 @@ export type PendingUpload = {
   outputFileSize?: number // Size of the converted file
   inputFileSize?: number // Original file size
   actualDuration?: number // Time taken for conversion
-  processing_progress?: {
-    elapsed_seconds: number
-    remaining_seconds: number
-    projected_eta: number
-    progress_percent: number
-  }
-  upload_progress?: {
-    completed_parts: number
-    total_parts: number
-    uploaded_bytes: number
-    total_bytes: number
-    percentage: number
-  }
 }
 
 export type AdvancedOptionsType = {
@@ -118,15 +105,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [needsConfiguration, setNeedsConfiguration] = useState(false)
   const [globalConfigPulsate, setGlobalConfigPulsate] = useState(false)
 
-  // Track which jobs are being dismissed (jobId -> true)
-  const [dismissingJobs, setDismissingJobs] = useState<Set<string>>(new Set())
-
-  // Track which jobs are being cancelled (jobId -> true)
-  const [cancellingJobs, setCancellingJobs] = useState<Set<string>>(new Set())
-
-  // Track initialization state to show spinner during page load
-  const [isInitializing, setIsInitializing] = useState(true)
-
   const handleNeedsConfiguration = () => {
     setNeedsConfiguration(true)
     // Auto-reset after animation completes
@@ -163,15 +141,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
   const MAX_FILES = 10
 
-  // Initialize polling for queue status updates (replaces WebSocket)
+  // Initialize WebSocket connection for real-time job updates
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
-  const { queueStatus, isPolling, error: pollingError } = useQueuePolling(
-    Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 1500,
-    true // always poll when component is mounted
-  )
+  const { connected: wsConnected, subscribeToJob, unsubscribeFromJob, sendUploadProgress } = useJobWebSocket(apiUrl)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const completionToastsShown = useRef<Set<string>>(new Set()) // Track which jobs have shown completion toast
 
   const handleAddMoreFiles = () => {
     fileInputRef.current?.click()
@@ -219,13 +193,10 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
           const recentJobs = jobs.filter((job) => (job.createdAt || job.timestamp) > oneDayAgo)
 
-          // Filter out dismissed jobs from restoration
-          const nonDismissedJobs = recentJobs.filter((job) => !isDismissedJob(job.jobId))
-
           // Separate completed and active jobs
-          const completedJobs = nonDismissedJobs.filter((job) => job.status === "COMPLETE")
-          const activeJobs = nonDismissedJobs.filter(
-            (job) => job.status !== "COMPLETE" && job.status !== "ERRORED" && job.status !== "CANCELLED" && job.status !== "UPLOADING",
+          const completedJobs = recentJobs.filter((job) => job.status === "COMPLETE")
+          const activeJobs = recentJobs.filter(
+            (job) => job.status !== "COMPLETE" && job.status !== "ERRORED" && job.status !== "CANCELLED",
           )
 
           // Restore completed jobs to converted files
@@ -358,184 +329,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    const initialize = async () => {
-      await Promise.all([loadPersistedJobs(), initializeLicense()])
-      // Wait a short moment for first poll to complete (polling starts on mount)
-      // The useQueuePolling hook will fetch immediately on mount
-      setTimeout(() => {
-        setIsInitializing(false)
-        log("Initialization complete, showing UI")
-      }, 500) // 500ms buffer to let first poll complete
-    }
-
-    initialize()
+    loadPersistedJobs()
+    initializeLicense()
   }, []) // Run only once on mount
-
-  // Sync polling data with pendingUploads (replaces WebSocket updates)
-  useEffect(() => {
-    if (!queueStatus || !queueStatus.jobs) return
-
-    // Log all job statuses from this poll
-    if (queueStatus.jobs.length > 0) {
-      log(`[QUEUE POLL] Received ${queueStatus.jobs.length} job(s):`)
-      queueStatus.jobs.forEach((job: QueueJob) => {
-        log(`  - Job ${job.job_id}: ${job.status} | ${job.filename}`)
-      })
-    } else {
-      log(`[QUEUE POLL] Received empty queue - all jobs dismissed or completed`)
-    }
-
-    // Process all jobs from polling response
-    queueStatus.jobs.forEach((job: QueueJob) => {
-      setPendingUploads((prev) => {
-        const existingFile = prev.find((f) => f.jobId === job.job_id)
-
-        if (!existingFile) {
-          // Skip jobs being cancelled - they're in the process of being removed
-          if (cancellingJobs.has(job.job_id)) {
-            return prev
-          }
-
-          // Skip cancelled jobs - they've been removed by user action
-          if (job.status === "CANCELLED") {
-            return prev
-          }
-
-          // Skip uploading jobs - they're from interrupted uploads in previous sessions
-          if (job.status === "UPLOADING") {
-            log(`[QUEUE POLL] Skipping UPLOADING job ${job.job_id} - likely interrupted upload`)
-            return prev
-          }
-
-          // Job from polling not in our list - add it with placeholder File
-          // This handles jobs that completed while user was away or on different device
-          const newUpload: PendingUpload = {
-            name: job.filename,
-            size: job.file_size,
-            file: new File([], job.filename), // Placeholder file for monitoring
-            jobId: job.job_id,
-            status: job.status,
-            isMonitoring: true,
-            deviceProfile: job.device_profile,
-            processing_progress: job.processing_progress,
-            upload_progress: job.upload_progress,
-          }
-
-          // If job is already complete, mark it as converted
-          if (job.status === "COMPLETE") {
-            newUpload.isConverted = true
-            newUpload.convertedName = job.filename
-            newUpload.downloadId = job.job_id
-            newUpload.convertedTimestamp = Date.now()
-
-            // Move to converted files (only if not dismissed)
-            setConvertedFiles((prevConverted) => {
-              const alreadyConverted = prevConverted.some((cf) => cf.downloadId === job.job_id)
-              if (alreadyConverted) return prevConverted
-
-              return [{
-                id: job.job_id,
-                originalName: job.filename,
-                convertedName: job.filename,
-                downloadId: job.job_id,
-                timestamp: Date.now(),
-                device: job.device_profile || "Unknown",
-                size: job.file_size,
-              }, ...prevConverted]
-            })
-
-            // Only show toast if we haven't shown it for this job yet
-            if (!completionToastsShown.current.has(job.job_id)) {
-              completionToastsShown.current.add(job.job_id)
-              toast.success(`Conversion completed for ${job.filename}`)
-            }
-
-            // Don't add COMPLETE jobs to pendingUploads - they go directly to convertedFiles
-            return prev
-          }
-
-          return [...prev, newUpload]
-        }
-
-        // Update file with latest status from polling
-        return prev.map((f) => {
-          if (f.jobId !== job.job_id) return f
-
-          // If job was cancelled, remove it from pending uploads
-          if (job.status === "CANCELLED") {
-            log(`[QUEUE POLL] Job ${job.job_id} was cancelled, removing from UI`)
-            return null // Will be filtered out below
-          }
-
-          const updated = {
-            ...f,
-            status: job.status,
-            processing_progress: job.processing_progress,
-            upload_progress: job.upload_progress,
-          }
-
-          // Handle completion
-          if (job.status === "COMPLETE") {
-            // Job completed - update with completion data
-            updated.isConverted = true
-            updated.convertedName = job.filename
-            updated.downloadId = job.job_id
-            updated.convertedTimestamp = Date.now()
-
-            // Move to converted files if not already there
-            setConvertedFiles((prevConverted) => {
-              const alreadyConverted = prevConverted.some((cf) => cf.downloadId === job.job_id)
-              if (alreadyConverted) return prevConverted
-
-              return [{
-                id: job.job_id,
-                originalName: job.filename,
-                convertedName: job.filename,
-                downloadId: job.job_id,
-                timestamp: Date.now(),
-                device: job.device_profile || "Unknown",
-                size: job.file_size,
-              }, ...prevConverted]
-            })
-
-            // Only show toast if we haven't shown it for this job yet
-            if (!completionToastsShown.current.has(job.job_id)) {
-              completionToastsShown.current.add(job.job_id)
-              toast.success(`Conversion completed for ${job.filename}`)
-            }
-          }
-
-          return updated
-        }).filter((f): f is PendingUpload => f !== null) // Remove cancelled jobs
-      })
-    })
-
-    // Remove jobs that are no longer in polling response
-    // This runs ALWAYS (even when queue is empty) to clean up dismissed/cancelled jobs
-    setPendingUploads((prev) => {
-      const pollingJobIds = new Set(queueStatus.jobs.map(job => job.job_id))
-
-      return prev.filter(file => {
-        // Keep files without jobId (not yet uploaded)
-        if (!file.jobId) return true
-
-        // Keep files that are in the polling response
-        if (pollingJobIds.has(file.jobId)) return true
-
-        // Keep files being cancelled (they'll be removed once cancellation completes)
-        if (cancellingJobs.has(file.jobId)) return true
-
-        // Keep files being dismissed (they'll be removed once dismissal completes)
-        if (dismissingJobs.has(file.jobId)) return true
-
-        // Remove all other jobs that are missing from polling response
-        // This handles dismissed/cancelled jobs filtered out by backend
-        // Completed files are already in convertedFiles, so they can be safely removed from pendingUploads
-        log(`[QUEUE POLL] Removing job ${file.jobId} (${file.name}) - no longer in polling response`)
-        return false
-      })
-    })
-  }, [queueStatus, cancellingJobs, dismissingJobs])
 
   const saveJobToStorage = (jobId: string, name: string, size: number, status: string, additionalData?: any) => {
     try {
@@ -599,99 +395,125 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     }
   }
 
-  const addToDismissedJobs = (jobId: string) => {
-    try {
-      const stored = localStorage.getItem("dismissed_jobs")
-      const dismissed = stored ? JSON.parse(stored) : []
-
-      // Add job ID with timestamp
-      dismissed.push({
-        jobId,
-        dismissedAt: Date.now(),
-      })
-
-      // Clean up old dismissed jobs (older than 24 hours)
-      const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-      const recentDismissed = dismissed.filter((d: any) => d.dismissedAt > oneDayAgo)
-
-      localStorage.setItem("dismissed_jobs", JSON.stringify(recentDismissed))
-    } catch (error) {
-      logError("Failed to add job to dismissed list:", error)
-    }
-  }
-
-  const isDismissedJob = (jobId: string): boolean => {
-    try {
-      const stored = localStorage.getItem("dismissed_jobs")
-      if (!stored) return false
-
-      const dismissed = JSON.parse(stored)
-      return dismissed.some((d: any) => d.jobId === jobId)
-    } catch (error) {
-      logError("Failed to check dismissed jobs:", error)
-      return false
-    }
-  }
-
-  const handleDismissJob = async (file: PendingUpload) => {
+  const handleDismissJob = (file: PendingUpload) => {
     if (file.jobId) {
-      // Mark job as being dismissed (show spinner)
-      setDismissingJobs((prev) => new Set(prev).add(file.jobId!))
+      removeJobFromStorage(file.jobId, true) // Force removal when user dismisses
+    }
+    setPendingUploads((prev) => prev.filter((f) => f !== file))
+  }
 
-      // Always call backend to set dismissed_at timestamp (for all job statuses)
-      try {
-        const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
-        const sessionKey = await ensureSessionKey()
+  // WebSocket-based job monitoring - replaces HTTP polling
+  const startJobMonitoring = (jobId: string, filename: string) => {
+    log(`[WebSocket] Starting monitoring for job ${jobId}`)
 
-        log(`Dismissing job ${file.jobId}`, { filename: file.name, status: file.status })
+    // Subscribe to job status updates via WebSocket
+    subscribeToJob(jobId, (statusData: JobStatus) => {
+      log(`[WebSocket] Status update for ${jobId}:`, statusData)
 
-        const response = await fetch(`${API_BASE_URL}/jobs/${file.jobId}/cancel`, {
-          method: 'POST',
-          headers: {
-            'X-Session-Key': sessionKey,
-            'Content-Type': 'application/json',
-          },
+      saveJobToStorage(jobId, filename, 0, statusData.status)
+
+      // Update UI
+      setPendingUploads((prev) => prev.map((f) => (f.jobId === jobId ? { ...f, status: statusData.status } : f)))
+
+      if (statusData.status === "COMPLETE") {
+        log("[v0] ========== CONVERSION COMPLETE ==========")
+        log("[v0] Job ID:", jobId)
+        log("[v0] Filename:", filename)
+        log("[v0] Status Data:", statusData)
+        log("[v0] Current pendingUploads before update:", pendingUploads)
+
+        log("[v0] Conversion complete via WebSocket, updating file in place with metadata")
+
+        // Save completed job to storage with additional data
+        saveJobToStorage(jobId, filename, 0, statusData.status, {
+          inputFilename: statusData.input_filename,
+          inputFileSize: statusData.input_file_size,
+          outputFilename: statusData.output_filename,
+          outputFileSize: statusData.output_file_size,
+          downloadId: jobId,
+          actualDuration: statusData.actual_duration,
+          deviceProfile: selectedProfile,
+          isConverted: true,
+          convertedName: statusData.output_filename,
+          convertedTimestamp: Date.now(),
         })
 
-        if (response.ok) {
-          log(`Job ${file.jobId} dismissed successfully - backend will filter from next poll`)
-          toast.success(`Dismissed: ${file.name}`)
-        } else {
-          logError(`Failed to dismiss job ${file.jobId}:`, await response.text())
-          toast.error(`Failed to dismiss: ${file.name}`)
-        }
-      } catch (error) {
-        logError(`Error dismissing job ${file.jobId}:`, error)
-        toast.error(`Error dismissing: ${file.name}`)
-      } finally {
-        // Remove from dismissing state
-        setDismissingJobs((prev) => {
-          const newSet = new Set(prev)
-          newSet.delete(file.jobId!)
-          return newSet
+        setPendingUploads((prev) => {
+          log("[v0] Updating pendingUploads, looking for jobId:", jobId)
+          const matchingFile = prev.find((f) => f.jobId === jobId)
+          log("[v0] Found matching file:", matchingFile)
+
+          const updated = prev.map((f) => {
+            if (f.jobId === jobId) {
+              const updatedFile = {
+                ...f,
+                isConverted: true,
+                convertedName: statusData.output_filename || filename,
+                downloadId: jobId,
+                convertedTimestamp: Date.now(),
+                outputFileSize: statusData.output_file_size,
+                inputFileSize: statusData.input_file_size,
+                actualDuration: statusData.actual_duration,
+                status: "COMPLETE",
+              }
+              log("[v0] Updated file:", updatedFile)
+              return updatedFile
+            }
+            return f
+          })
+
+          log("[v0] New pendingUploads after update:", updated)
+          return updated
+        })
+
+        setConvertedFiles((prev) => [
+          {
+            id: Date.now().toString(),
+            originalName: statusData.input_filename || filename,
+            convertedName: statusData.output_filename || filename,
+            downloadId: jobId,
+            timestamp: Date.now(),
+            device: DEVICE_PROFILES[selectedProfile] || selectedProfile,
+            size: statusData.output_file_size,
+            inputFileSize: statusData.input_file_size,
+            actualDuration: statusData.actual_duration,
+          },
+          ...prev,
+        ])
+
+        // setPendingUploads((prev) => prev.filter((f) => f.jobId !== jobId))
+
+        // Unsubscribe from updates
+        unsubscribeFromJob(jobId)
+
+        toast.success(`Conversion completed for ${filename}`)
+        log("[v0] ========== END CONVERSION COMPLETE ==========")
+      } else if (statusData.status === "CANCELLED") {
+        // Silently remove cancelled jobs from UI
+        setPendingUploads((prev) => prev.filter((f) => f.jobId !== jobId))
+        unsubscribeFromJob(jobId)
+        removeJobFromStorage(jobId)
+      } else if (
+        statusData.status === "failed" ||
+        statusData.status === "ERRORED"
+      ) {
+        setPendingUploads((prev) =>
+          prev.map((f) =>
+            f.jobId === jobId
+              ? { ...f, error: statusData.error || "Try a different file", status: statusData.status }
+              : f,
+          ),
+        )
+
+        // Unsubscribe from updates
+        unsubscribeFromJob(jobId)
+
+        toast.error(`Conversion failed: ${filename}`, {
+          description: statusData.error || "Try a different file",
         })
       }
-
-      // Remove from localStorage
-      removeJobFromStorage(file.jobId, true)
-
-      // Track dismissal temporarily to prevent re-adding during transition
-      addToDismissedJobs(file.jobId)
-    }
-    // Job will be removed from UI automatically by next polling cycle
-    // (backend filters dismissed jobs from /api/queue/status response)
+    })
   }
-
-  // Polling-based job monitoring (WebSocket replaced with polling)
-  const startJobMonitoring = (jobId: string, filename: string) => {
-    log(`[POLLING] Job ${jobId} will be monitored via polling`)
-
-    // No-op: Polling handles monitoring automatically via useEffect above
-    // Just save to storage so job persists across refreshes
-    saveJobToStorage(jobId, filename, 0, "QUEUED")
-  }
-
-  // Legacy WebSocket code removed - now using polling instead
 
   const handleFileUpload = (files: File[]) => {
     if (isConverting) {
@@ -997,10 +819,12 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 prev.map((f) => (f === currentFile ? { ...f, jobId, status: "UPLOADING", isMonitoring: true } : f)),
               )
 
-              log("Job created - polling will track progress", jobId, {
+              log("Job created - starting WebSocket monitoring", jobId, {
                 initialStatus: "UPLOADING",
               })
-            }
+            },
+            // WebSocket upload progress callback for real-time backend updates
+            sendUploadProgress,
           )
         } catch (uploadInitError) {
           logError("Failed to initialize upload", {
@@ -1051,28 +875,188 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           throw uploadError
         })
 
-        // Polling-based job monitoring - WebSocket code removed
-        // The polling hook (useQueuePolling) automatically tracks job status
-        // Just wait for upload to complete, polling handles the rest
-        log(`[POLLING] Job ${jobId} submitted, polling will track progress`)
+        // WebSocket-based job monitoring - replaces HTTP polling
+        log(`[WebSocket] Starting real-time monitoring for job ${jobId}`)
+        log("Starting WebSocket monitoring", jobId, {
+          reason: "Real-time status updates via WebSocket",
+        })
 
-        // Wait for upload to complete
-        await uploadCompletePromise
+        // Create a Promise that resolves when job completes
+        const jobCompletionPromise = new Promise<void>((resolve, reject) => {
+          subscribeToJob(jobId, (wsStatus: JobStatus) => {
+            log(`[WebSocket] Status update: ${wsStatus.status}`)
+            statusData = wsStatus
 
-        log("Upload complete for job", jobId, { filename: currentFile.name })
+            saveJobToStorage(jobId, currentFile.name, currentFile.size, wsStatus.status)
 
-        // Polling will automatically update status and handle completion
-        // No need to manually update status - polling hook does it all
+            // Update current status for progress bar and log status changes
+            if (localCurrentStatus !== wsStatus.status) {
+              const previousStatus = localCurrentStatus || "none"
 
-        // Dismiss the upload toast
-        toast.success(`Upload complete: ${currentFile.name}`, {
+              // Log first status or status transitions
+              if (isFirstStatusPoll) {
+                log(`[${new Date().toISOString()}] Initial WebSocket status: ${wsStatus.status}`)
+                log("First WebSocket status", jobId, {
+                  initial_status: wsStatus.status,
+                })
+                isFirstStatusPoll = false
+              } else {
+                log(`[${new Date().toISOString()}] Status transition: ${previousStatus} -> ${wsStatus.status}`)
+                log(`STATUS TRANSITION: ${previousStatus} -> ${wsStatus.status}`, jobId, {
+                  old_status: previousStatus,
+                  new_status: wsStatus.status,
+                  progress_percent: conversionProgress,
+                  upload_progress: uploadProgress,
+                })
+              }
+
+              localCurrentStatus = wsStatus.status
+              setCurrentStatus(wsStatus.status)
+
+              setPendingUploads((prev) => prev.map((f) => (f.jobId === jobId ? { ...f, status: wsStatus.status } : f)))
+            }
+
+            // Track conversion start time and ETA
+            if (wsStatus.status === "PROCESSING" && conversionStartTime === null) {
+              conversionStartTime = Date.now()
+              projectedEta = wsStatus.projected_eta // In seconds
+              setEta(projectedEta)
+            }
+
+            // Calculate or use provided progress
+            if (wsStatus.progress_percent !== undefined) {
+              setConversionProgress(wsStatus.progress_percent)
+            } else if (conversionStartTime && projectedEta && wsStatus.status === "PROCESSING") {
+              const elapsedSeconds = (Date.now() - conversionStartTime) / 1000
+              const progressPercent = Math.min(95, (elapsedSeconds / projectedEta) * 100)
+              const remaining = Math.max(0, projectedEta - elapsedSeconds)
+              setConversionProgress(progressPercent)
+              setRemainingTime(remaining)
+            }
+
+            // Update ETA and remaining time from WebSocket data
+            if (wsStatus.projected_eta && !eta) {
+              setEta(wsStatus.projected_eta)
+            }
+            if (wsStatus.remaining_seconds !== undefined) {
+              setRemainingTime(wsStatus.remaining_seconds)
+            }
+
+            if (wsStatus.status === "COMPLETE") {
+              log("Conversion completed successfully", jobId, {
+                finalStatus: wsStatus.status,
+                inputFilename: wsStatus.input_filename,
+                inputFileSize: wsStatus.input_file_size,
+                outputFilename: wsStatus.output_filename,
+                outputFileSize: wsStatus.output_file_size,
+                actualDuration: wsStatus.actual_duration,
+              })
+              conversionComplete = true
+              filename = wsStatus.output_filename || currentFile.name
+              inputFilename = wsStatus.input_filename
+              inputFileSize = wsStatus.input_file_size
+              outputFileSize = wsStatus.output_file_size
+              setConversionProgress(100)
+              setRemainingTime(0)
+
+              // Save completed job to storage
+              saveJobToStorage(jobId, currentFile.name, currentFile.size, "COMPLETE", {
+                inputFilename: wsStatus.input_filename,
+                inputFileSize: wsStatus.input_file_size,
+                outputFilename: wsStatus.output_filename,
+                outputFileSize: wsStatus.output_file_size,
+                downloadId: jobId,
+                actualDuration: wsStatus.actual_duration,
+              })
+
+              // Unsubscribe and resolve
+              unsubscribeFromJob(jobId)
+              resolve()
+            } else if (wsStatus.status === "CANCELLED") {
+              // Silently handle cancelled jobs
+              log("Job cancelled", jobId, {
+                finalStatus: wsStatus.status,
+              })
+              conversionComplete = true
+              setConversionProgress(0)
+              setRemainingTime(undefined)
+
+              // Remove from storage and UI
+              removeJobFromStorage(jobId)
+              setPendingUploads((prev) => prev.filter((f) => f.jobId !== jobId))
+
+              // Unsubscribe and reject
+              unsubscribeFromJob(jobId)
+              reject(new Error("Job cancelled"))
+            } else if (
+              wsStatus.status === "failed" ||
+              wsStatus.status === "ERRORED" ||
+              wsStatus.error
+            ) {
+              logError("Conversion failed", jobId, {
+                finalStatus: wsStatus.status,
+                error: wsStatus.error,
+              })
+              conversionComplete = true
+              errorMessage = wsStatus.error || "Try a different file"
+              setConversionProgress(0)
+              setRemainingTime(undefined)
+
+              saveJobToStorage(jobId, currentFile.name, currentFile.size, "ERRORED")
+
+              // Unsubscribe and reject
+              unsubscribeFromJob(jobId)
+              reject(new Error(errorMessage))
+            }
+          })
+        })
+
+        // Wait for job to complete
+        await jobCompletionPromise
+
+        if (errorMessage) {
+          throw new Error(errorMessage)
+        }
+
+        setPendingUploads((prev) =>
+          prev.map((f) =>
+            f.jobId === jobId
+              ? {
+                  ...f,
+                  isConverted: true,
+                  convertedName: filename,
+                  downloadId: jobId,
+                  convertedTimestamp: Date.now(),
+                  outputFileSize: outputFileSize,
+                  inputFileSize: inputFileSize,
+                  actualDuration: statusData.actual_duration,
+                  status: "COMPLETE",
+                }
+              : f,
+          ),
+        )
+
+        setConvertedFiles((prev) => [
+          {
+            id: Date.now().toString(),
+            originalName: inputFilename || currentFile.name,
+            convertedName: filename,
+            downloadId: jobId,
+            timestamp: Date.now(),
+            device: DEVICE_PROFILES[fileDeviceProfile] || fileDeviceProfile, // Use per-file device
+            size: outputFileSize,
+            inputFileSize: inputFileSize,
+            actualDuration: statusData.actual_duration, // Corrected: use statusData from scope
+          },
+          ...prev,
+        ])
+
+        toast.success(`Conversion completed for ${currentFile.name}`, {
           id: toastId,
-          duration: 3000,
+          duration: 6000,
         })
 
-        log("File uploaded successfully, polling will track conversion", jobId, {
-          filename: currentFile.name
-        })
+        // setPendingUploads((prev) => prev.filter((f) => f.jobId !== jobId))
 
         // Reset progress states for next file
         setUploadProgress(0)
@@ -1197,7 +1181,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     // Note: We don't actually restore because handleConvert already updates the state correctly
   }
 
-  const handleCancelJob = async (file: PendingUpload) => {
+  const handleCancelJob = (file: PendingUpload) => {
     if (!file.jobId) {
       logError("[v0] Cannot cancel: No job ID")
       toast.error("Cannot cancel: No job ID")
@@ -1205,9 +1189,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     }
 
     log("[v0] Cancel requested for job:", file.jobId, "file:", file.name)
-
-    // Mark job as being cancelled (show spinner)
-    setCancellingJobs((prev) => new Set(prev).add(file.jobId!))
 
     // Log in background (don't block UI)
     log("Cancel button clicked", file.jobId, {
@@ -1238,6 +1219,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     // Dismiss any active conversion toasts for this job
     toast.dismiss()
 
+    // IMMEDIATELY remove the job card from UI
+    setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
+
     // Reset conversion state if this was the active job
     if (wasActiveJob) {
       setIsConverting(false)
@@ -1248,66 +1232,44 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       setCurrentStatus(undefined)
     }
 
-    // Backend cancellation with timeout
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+    // Unsubscribe from WebSocket updates for this job
+    unsubscribeFromJob(file.jobId)
 
-      const response = await fetchWithLicense(`/api/jobs/${file.jobId}/cancel`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeoutId))
+    // Remove from localStorage
+    removeJobFromStorage(file.jobId)
 
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || "Failed to cancel job")
-      }
+    // Backend cancellation continues in background (don't block UI on this)
+    ;(async () => {
+      try {
+        const response = await fetchWithLicense(`/api/jobs/${file.jobId}/cancel`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
 
-      const data = await response.json()
+        if (!response.ok) {
+          const error = await response.json()
+          throw new Error(error.error || "Failed to cancel job")
+        }
 
-      log("Job cancellation confirmed by backend - will be filtered from next poll", file.jobId, {
-        filename: file.name,
-        new_status: data.status,
-      })
+        const data = await response.json()
 
-      // Remove from localStorage
-      removeJobFromStorage(file.jobId)
+        log("Job cancellation confirmed by backend", file.jobId, {
+          filename: file.name,
+          new_status: data.status,
+        })
 
-      // Track dismissal temporarily to prevent re-adding during transition
-      addToDismissedJobs(file.jobId)
-
-      toast.success(`Cancelled ${file.name}`)
-    } catch (error) {
-      // Handle timeout/abort
-      if (error instanceof Error && error.name === 'AbortError') {
-        logError("[v0] Backend cancel timed out, removing job from UI anyway", file.jobId)
-
-        // Remove from localStorage
-        removeJobFromStorage(file.jobId)
-
-        // Track dismissal to prevent re-adding
-        addToDismissedJobs(file.jobId)
-
-        toast.warning(`Cancelled ${file.name} (backend timeout)`)
-      } else {
-        logError("[v0] Backend cancel failed:", error)
+        toast.success(`Cancelled ${file.name}`)
+      } catch (error) {
+        logError("[v0] Backend cancel failed (UI already removed):", error)
         logError("Job cancellation failed in backend", file.jobId, {
           error: error instanceof Error ? error.message : String(error),
           filename: file.name,
         })
-        toast.error(`Failed to cancel ${file.name}`)
+        // Don't show error toast since job is already removed from UI
       }
-    } finally {
-      // Remove from cancelling state
-      setCancellingJobs((prev) => {
-        const newSet = new Set(prev)
-        newSet.delete(file.jobId!)
-        return newSet
-      })
-    }
+    })()
   }
 
   const handleAdvancedOptionsChange = (newOptions: Partial<AdvancedOptionsType>) => {
@@ -1349,11 +1311,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     } catch (error) {
       logError("Failed to remove job from localStorage:", error)
-    }
-
-    // Track dismissal to prevent re-adding from polling
-    if (file.downloadId) {
-      addToDismissedJobs(file.downloadId)
     }
 
     // Remove from React state
@@ -1488,11 +1445,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {isInitializing ? (
-              <div className="flex items-center justify-center py-12">
-                <LoaderIcon className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : pendingUploads.length === 0 ? (
+            {pendingUploads.length === 0 ? (
               <FileUploader
                 onFilesSelected={handleFileUpload}
                 disabled={isConverting}
@@ -1514,8 +1467,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   showAsUploadedFiles={false}
                   onRemoveFile={(file) => setPendingUploads((prev) => prev.filter((f) => f !== file))}
                   onDismissJob={handleDismissJob}
-                  dismissingJobs={dismissingJobs}
-                  cancellingJobs={cancellingJobs}
                   uploadProgress={uploadProgress}
                   conversionProgress={conversionProgress}
                   isUploaded={isUploaded}

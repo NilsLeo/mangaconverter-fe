@@ -25,6 +25,8 @@ interface ConversionQueueProps {
   showAsUploadedFiles?: boolean
   onRemoveFile?: (file: PendingUpload) => void
   onDismissJob?: (file: PendingUpload) => void
+  dismissingJobs?: Set<string>
+  cancellingJobs?: Set<string>
   uploadProgress?: number
   conversionProgress?: number
   isUploaded?: boolean
@@ -48,6 +50,8 @@ export function ConversionQueue({
   onConvert,
   onConvertSingle,
   onCancelJob,
+  dismissingJobs = new Set(),
+  cancellingJobs = new Set(),
   selectedProfile,
   globalAdvancedOptions,
   onReorder,
@@ -255,7 +259,7 @@ export function ConversionQueue({
       )
     }
 
-    if (selectedProfile === "Placeholder" && !isConverting) {
+    if (selectedProfile === "Placeholder" && !isConverting && !file.status) {
       return (
         <Badge
           variant="secondary"
@@ -266,7 +270,52 @@ export function ConversionQueue({
       )
     }
 
-    if (isConverting && index === 0) {
+    // Check file's own status property first (from polling)
+    if (file.status) {
+      switch (file.status) {
+        case "UPLOADING":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+            >
+              Uploading
+            </Badge>
+          )
+        case "QUEUED":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-white/10 text-white dark:text-white border-white/20"
+            >
+              READING FILE
+            </Badge>
+          )
+        case "PROCESSING":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+            >
+              Processing
+            </Badge>
+          )
+        case "COMPLETE":
+          return (
+            <Badge
+              variant="secondary"
+              className="uppercase text-xs font-medium bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20"
+            >
+              Finished
+            </Badge>
+          )
+        default:
+          break
+      }
+    }
+
+    // Fallback to global status for first item when converting
+    if (isConverting && index === 0 && currentStatus) {
       switch (currentStatus) {
         case "UPLOADING":
           return (
@@ -321,6 +370,34 @@ export function ConversionQueue({
   }
 
   const getProgressInfo = (file: PendingUpload, index: number) => {
+    // Check file's own status first (from polling)
+    if (file.status === "PROCESSING" && file.processing_progress) {
+      const { progress_percent, remaining_seconds } = file.processing_progress
+      return {
+        progress: Math.max(0, Math.min(100, progress_percent)),
+        label: remaining_seconds > 0 ? `${formatTime(remaining_seconds)} remaining` : "Processing",
+        showProgress: true,
+      }
+    }
+
+    if (file.status === "UPLOADING" && file.upload_progress) {
+      const { percentage } = file.upload_progress
+      return {
+        progress: Math.max(0, Math.min(100, percentage)),
+        label: `Uploading - ${Math.round(percentage)}%`,
+        showProgress: true,
+      }
+    }
+
+    if (file.status === "QUEUED") {
+      return {
+        progress: 0,
+        label: "Reading File",
+        showProgress: false,
+      }
+    }
+
+    // Fallback to global status for first item when converting (backward compatibility)
     if (!isConverting || index !== 0 || currentStatus === "COMPLETE") {
       return null
     }
@@ -342,6 +419,7 @@ export function ConversionQueue({
         }
 
       case "PROCESSING":
+        // Fallback to old logic for backward compatibility
         const safeConversionProgress = Math.max(0, Math.min(100, conversionProgress || 0))
         const processingProgress = initialRemainingTime && dynamicRemainingTime
           ? Math.max(0, Math.min(100, ((initialRemainingTime - dynamicRemainingTime) / initialRemainingTime) * 100))
@@ -532,21 +610,6 @@ export function ConversionQueue({
                       </Button>
                     )}
 
-                    {jobRunning && onCancelJob && (
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => {
-                          log("[v0] Cancel button clicked for job:", file.jobId)
-                          onCancelJob(file)
-                        }}
-                        className="shadow-sm"
-                      >
-                        <XCircle className="h-4 w-4 mr-2" />
-                        Cancel
-                      </Button>
-                    )}
-
                     {!file.isConverted && !file.error && !jobRunning && onConfigureFile && (
                       <Button
                         variant="outline"
@@ -591,29 +654,73 @@ export function ConversionQueue({
                       <Loader2 className="h-5 w-5 animate-spin text-primary" />
                     )}
 
-                    {!isActive && !file.error && !jobRunning && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => onRemoveFile?.(file)}
-                        className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
-                        title="Delete"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    )}
+                    {/* Unified Cancel/Dismiss/Remove button */}
+                    {(() => {
+                      const isCancelling = file.jobId ? cancellingJobs.has(file.jobId) : false
+                      const isDismissing = file.jobId ? dismissingJobs.has(file.jobId) : false
+                      const isLoading = isCancelling || isDismissing
 
-                    {file.error && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => onDismissJob?.(file)}
-                        className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
-                        title="Delete"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    )}
+                      // Determine action based on job state
+                      if (jobRunning && onCancelJob) {
+                        // Active job (UPLOADING/QUEUED/PROCESSING) - show Cancel button
+                        return (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => {
+                              log("[v0] Cancel button clicked for job:", file.jobId)
+                              onCancelJob(file)
+                            }}
+                            disabled={isLoading}
+                            className="shadow-sm"
+                          >
+                            {isLoading ? (
+                              <>
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                Cancelling...
+                              </>
+                            ) : (
+                              <>
+                                <XCircle className="h-4 w-4 mr-2" />
+                                Cancel
+                              </>
+                            )}
+                          </Button>
+                        )
+                      } else if (file.error || file.isConverted) {
+                        // Terminal state (COMPLETE/ERRORED) - show X icon button for dismiss
+                        return (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onDismissJob?.(file)}
+                            disabled={isLoading}
+                            className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
+                            title="Dismiss"
+                          >
+                            {isLoading ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <X className="h-4 w-4" />
+                            )}
+                          </Button>
+                        )
+                      } else if (!isActive && !jobRunning) {
+                        // Not started yet - show X icon button for remove
+                        return (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onRemoveFile?.(file)}
+                            className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
+                            title="Remove"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )
+                      }
+                      return null
+                    })()}
                   </div>
                 </div>
 

@@ -28,6 +28,7 @@ export class MultipartUploadClient {
   private sessionKey: string
   private config: Required<MultipartUploadConfig>
   private aborted: boolean = false
+  private uploadSessionId: string
 
   constructor(
     apiBaseUrl: string,
@@ -36,12 +37,27 @@ export class MultipartUploadClient {
   ) {
     this.apiBaseUrl = apiBaseUrl
     this.sessionKey = sessionKey
+
+    // Get max concurrent parts from env var, fallback to config, then default
+    const envMaxConcurrent = typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS
+      ? Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS)
+      : undefined
+
     this.config = {
       partSize: config.partSize || 50 * 1024 * 1024, // 50MB
-      maxConcurrentParts: config.maxConcurrentParts || 10, // Increased from 6 to 10 for faster uploads
+      maxConcurrentParts: config.maxConcurrentParts || envMaxConcurrent || 6, // Env var > config > default (6)
       retryAttempts: config.retryAttempts || 3,
       retryDelay: config.retryDelay || 1000,
     }
+
+    log("[MULTIPART] Client initialized", {
+      maxConcurrentParts: this.config.maxConcurrentParts,
+      partSize: this.config.partSize,
+      source: envMaxConcurrent ? 'env_var' : config.maxConcurrentParts ? 'config' : 'default',
+    })
+
+    // Generate unique upload session ID to prevent duplicate uploads from multiple tabs
+    this.uploadSessionId = `upload_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
   }
 
   /**
@@ -54,12 +70,41 @@ export class MultipartUploadClient {
   ): Promise<void> {
     this.aborted = false
 
+    // Check if another tab is already uploading this job
+    const storageKey = `multipart_upload_${jobId}`
+    const existingSession = localStorage.getItem(storageKey)
+
+    if (existingSession) {
+      const sessionData = JSON.parse(existingSession)
+      const sessionAge = Date.now() - sessionData.timestamp
+
+      // If session is less than 5 minutes old, another tab is likely uploading
+      if (sessionAge < 5 * 60 * 1000) {
+        throw new Error(
+          "This file is already being uploaded in another tab. Please wait for it to complete or close the other tab."
+        )
+      }
+      // If session is older than 5 minutes, it's likely stale (tab was closed)
+      log("[MULTIPART] Found stale upload session, will override", {
+        job_id: jobId,
+        session_age_ms: sessionAge,
+      })
+    }
+
+    // Mark this session as active
+    localStorage.setItem(storageKey, JSON.stringify({
+      sessionId: this.uploadSessionId,
+      timestamp: Date.now(),
+      jobId: jobId,
+    }))
+
     try {
       // Step 1: Initiate multipart upload + Pre-warm R2 connection
       log("[MULTIPART] Initiating multipart upload", {
         job_id: jobId,
         file_name: file.name,
         file_size: file.size,
+        upload_session_id: this.uploadSessionId,
       })
 
       const [initResponse] = await Promise.all([
@@ -87,6 +132,9 @@ export class MultipartUploadClient {
       await this.finalizeUpload(jobId)
 
       log("[MULTIPART] Upload completed successfully", { job_id: jobId })
+
+      // Clear upload session on success
+      localStorage.removeItem(storageKey)
     } catch (error) {
       // Abort upload on error
       logError("[MULTIPART] Upload failed, aborting", {
@@ -94,6 +142,10 @@ export class MultipartUploadClient {
         error: error instanceof Error ? error.message : String(error),
       })
       await this.abortUpload(jobId)
+
+      // Clear upload session on error
+      localStorage.removeItem(storageKey)
+
       throw error
     }
   }
@@ -182,9 +234,26 @@ export class MultipartUploadClient {
     let uploadedBytes = 0
     const totalBytes = parts.reduce((sum, p) => sum + p.blob.size, 0)
 
-    // Start ALL uploads immediately with concurrency limit using a semaphore pattern
-    const activeTasks = new Set<Promise<void>>()
-    let partIndex = 0
+    // Set up heartbeat to update upload session timestamp (prevents stale session detection)
+    const storageKey = `multipart_upload_${jobId}`
+    const heartbeatInterval = setInterval(() => {
+      if (!this.aborted) {
+        localStorage.setItem(storageKey, JSON.stringify({
+          sessionId: this.uploadSessionId,
+          timestamp: Date.now(),
+          jobId: jobId,
+          progress: {
+            completed: completedParts,
+            total: totalParts,
+          },
+        }))
+      }
+    }, 10000) // Update every 10 seconds
+
+    try {
+      // Start ALL uploads immediately with concurrency limit using a semaphore pattern
+      const activeTasks = new Set<Promise<void>>()
+      let partIndex = 0
 
     const uploadNext = async () => {
       while (partIndex < parts.length) {
@@ -204,7 +273,7 @@ export class MultipartUploadClient {
             completedParts++
             uploadedBytes += part.blob.size
 
-            // Report progress immediately
+            // Report progress - this only happens after BOTH S3 upload AND backend notification succeed
             if (onProgress) {
               onProgress({
                 completedParts,
@@ -215,12 +284,22 @@ export class MultipartUploadClient {
               })
             }
 
-            log("[MULTIPART] Part completed", {
+            log("[MULTIPART] Part completed and confirmed by backend", {
               job_id: jobId,
               part_number: part.partNumber,
               completed: completedParts,
               total: totalParts,
+              percentage: ((completedParts / totalParts) * 100).toFixed(1) + "%",
             })
+          })
+          .catch((error) => {
+            logError("[MULTIPART] Part upload failed", {
+              job_id: jobId,
+              part_number: part.partNumber,
+              error: error instanceof Error ? error.message : String(error),
+              stage: "upload_or_notification",
+            })
+            throw error // Re-throw to fail the entire upload
           })
           .finally(() => {
             activeTasks.delete(uploadTask)
@@ -230,12 +309,16 @@ export class MultipartUploadClient {
       }
     }
 
-    // Start upload pump
-    await uploadNext()
+      // Start upload pump
+      await uploadNext()
 
-    // Wait for all remaining uploads to complete
-    if (activeTasks.size > 0) {
-      await Promise.all(activeTasks)
+      // Wait for all remaining uploads to complete
+      if (activeTasks.size > 0) {
+        await Promise.all(activeTasks)
+      }
+    } finally {
+      // Always clear heartbeat
+      clearInterval(heartbeatInterval)
     }
   }
 
@@ -248,6 +331,12 @@ export class MultipartUploadClient {
     for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
       try {
         // Upload to S3 using presigned URL
+        log(`[MULTIPART] Uploading part ${part.partNumber} to S3 (attempt ${attempt + 1})`, {
+          job_id: jobId,
+          part_number: part.partNumber,
+          part_size: part.blob.size,
+        })
+
         const uploadResponse = await fetch(part.url, {
           method: "PUT",
           body: part.blob,
@@ -266,11 +355,22 @@ export class MultipartUploadClient {
           throw new Error("No ETag in S3 response")
         }
 
+        log(`[MULTIPART] Part ${part.partNumber} uploaded to S3, notifying backend`, {
+          job_id: jobId,
+          part_number: part.partNumber,
+          etag: etag,
+        })
+
         part.etag = etag
         part.uploaded = true
 
-        // Notify backend of part completion
+        // Notify backend of part completion - this is critical!
         await this.notifyPartComplete(jobId, part.partNumber, etag)
+
+        log(`[MULTIPART] Part ${part.partNumber} confirmed by backend`, {
+          job_id: jobId,
+          part_number: part.partNumber,
+        })
 
         return // Success!
       } catch (error) {
@@ -319,7 +419,30 @@ export class MultipartUploadClient {
     )
 
     if (!response.ok) {
-      throw new Error(`Failed to notify part completion: ${response.status}`)
+      let errorMessage = `Failed to notify backend of part ${partNumber} completion (HTTP ${response.status})`
+      try {
+        const errorData = await response.json()
+        if (errorData.error) {
+          errorMessage = `Part ${partNumber}: ${errorData.error}`
+        }
+      } catch (e) {
+        // Couldn't parse error response, use default message
+      }
+
+      logError("[MULTIPART] Backend notification failed", {
+        job_id: jobId,
+        part_number: partNumber,
+        status: response.status,
+        error: errorMessage,
+      })
+
+      throw new Error(errorMessage)
+    }
+
+    // Verify the response contains success confirmation
+    const result = await response.json()
+    if (!result.success) {
+      throw new Error(`Part ${partNumber}: Backend did not confirm completion`)
     }
   }
 
@@ -342,6 +465,18 @@ export class MultipartUploadClient {
       const error = await response.json().catch(() => ({
         error: "Failed to finalize upload",
       }))
+
+      // If parts are missing, provide detailed error message
+      if (error.completed_parts !== undefined && error.total_parts !== undefined) {
+        const message = `Upload incomplete: Only ${error.completed_parts} of ${error.total_parts} parts were confirmed by the backend. This may happen if the page was refreshed during upload or if there were network errors.`
+        logError("[MULTIPART] Finalize failed - missing parts", {
+          job_id: jobId,
+          completed_parts: error.completed_parts,
+          total_parts: error.total_parts,
+        })
+        throw new Error(message)
+      }
+
       throw new Error(error.error || "Failed to finalize upload")
     }
   }

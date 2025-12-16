@@ -35,30 +35,31 @@ async function uploadFileViaMultipart(
   onProgress: (progress: number) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
 ): Promise<void> {
-  // Calculate dynamic part size: fileSize/100 for smooth progress bar
-  // But enforce S3 limits: min 5MB (except last part), max to keep parts between 1-10,000
-  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5MB (S3 minimum for all but last part)
-  const MAX_PART_SIZE = 100 * 1024 * 1024 // 100MB (reasonable maximum)
-  const TARGET_PARTS = 100 // Target 100 parts for 1% granularity
+  // Calculate dynamic part size to always split into 100 parts for 1-100% progress
+  // S3/R2 constraints:
+  // - Minimum part size: 5MB (except last part which can be any size)
+  // - Maximum parts: 10,000
+  // - Maximum part size: 5GB
+  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5MB (S3/R2 minimum for non-final parts)
+  const TARGET_PARTS = 100 // Always split into 100 parts for consistent 1-100% progress
 
-  let partSize = Math.floor(file.size / TARGET_PARTS)
+  let partSize: number
+  let numParts: number
 
-  // Enforce minimum part size (S3 requirement)
-  if (partSize < MIN_PART_SIZE && file.size > MIN_PART_SIZE) {
-    partSize = MIN_PART_SIZE
-  }
-
-  // Enforce maximum part size (prevent too large parts)
-  if (partSize > MAX_PART_SIZE) {
-    partSize = MAX_PART_SIZE
-  }
-
-  // For very small files (< 5MB), use single part
-  if (file.size < MIN_PART_SIZE) {
+  if (file.size <= MIN_PART_SIZE) {
+    // Very small files (≤5MB): single part upload
     partSize = file.size
+    numParts = 1
+  } else if (file.size < MIN_PART_SIZE * TARGET_PARTS) {
+    // Small-medium files (<500MB): use minimum part size
+    // This will result in fewer than 100 parts, but respects S3 minimum
+    partSize = MIN_PART_SIZE
+    numParts = Math.ceil(file.size / partSize)
+  } else {
+    // Large files (≥500MB): split into exactly 100 parts
+    partSize = Math.ceil(file.size / TARGET_PARTS)
+    numParts = TARGET_PARTS
   }
-
-  const numParts = Math.ceil(file.size / partSize)
 
   log(`[MULTIPART UPLOAD] Starting multipart upload`, {
     job_id: jobId,
