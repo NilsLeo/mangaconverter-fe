@@ -8,7 +8,6 @@ import { Progress } from "@/components/ui/progress"
 import { motion } from "framer-motion"
 import { useState, useEffect } from "react"
 import type { PendingUpload, AdvancedOptionsType } from "./manga-converter"
-import { Checkbox } from "@/components/ui/checkbox"
 import { fetchWithLicense } from "@/lib/utils"
 import { log, logError, logWarn, logDebug } from "@/lib/logger"
 import { toast } from "sonner"
@@ -33,11 +32,6 @@ interface ConversionQueueProps {
   eta?: number
   remainingTime?: number
   currentStatus?: string
-  selectedFiles?: Set<string>
-  onToggleFileSelection?: (fileName: string) => void
-  onSelectAll?: () => void
-  onClearSelection?: () => void
-  onUpdateSelectedFiles?: (deviceProfile?: string, advancedOptions?: Partial<AdvancedOptionsType>) => void
   deviceProfiles?: Record<string, string>
   onAddMoreFiles?: () => void
   onNeedsConfiguration?: () => void
@@ -64,11 +58,6 @@ export function ConversionQueue({
   eta,
   remainingTime,
   currentStatus,
-  selectedFiles = new Set(),
-  onToggleFileSelection,
-  onSelectAll,
-  onClearSelection,
-  onUpdateSelectedFiles,
   deviceProfiles = {},
   onAddMoreFiles,
   onNeedsConfiguration,
@@ -435,9 +424,6 @@ export function ConversionQueue({
     }
   }
 
-  const hasCustomSettings = (file: PendingUpload) => {
-    return file.deviceProfile !== undefined || file.advancedOptions !== undefined
-  }
 
   const downloadFile = async (file: PendingUpload) => {
     if (!file.downloadId) return
@@ -497,8 +483,6 @@ export function ConversionQueue({
       {items.map((file, index) => {
         const progressInfo = getProgressInfo(file, index)
         const isActive = isConverting && index === 0
-        const isSelected = selectedFiles.has(file.name)
-        const customSettings = hasCustomSettings(file)
         const jobRunning = isJobRunning(file)
         const needsConfig = selectedProfile === "Placeholder"
         const shouldPulsate = pulsatingConfigFile === file.name
@@ -512,17 +496,10 @@ export function ConversionQueue({
             transition={{ delay: index * 0.05 }}
           >
             <Card
-              className={`${file.error ? "border-destructive/40 bg-destructive/5" : ""} ${isActive ? "border-primary/40" : ""} ${isSelected ? "border-primary/60 bg-primary/5" : ""} ${file.isConverted ? "border-green-500/40 bg-green-500/5" : ""}`}
+              className={`${file.error ? "border-destructive/40 bg-destructive/5" : ""} ${isActive ? "border-primary/40" : ""} ${file.isConverted ? "border-green-500/40 bg-green-500/5" : ""}`}
             >
               <div className="p-4">
                 <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
-                  {onToggleFileSelection && !isActive && !file.isConverted && (
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => onToggleFileSelection(file.name)}
-                      className="mt-1 md:mt-0"
-                    />
-                  )}
 
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <div className="rounded-md p-2 bg-muted/50 flex-shrink-0">
@@ -533,11 +510,6 @@ export function ConversionQueue({
                         <p className="font-medium truncate text-sm">
                           {file.isConverted && file.convertedName ? file.convertedName : file.name}
                         </p>
-                        {customSettings && !file.isConverted && (
-                          <Badge variant="outline" className="text-xs">
-                            Custom
-                          </Badge>
-                        )}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         {file.isConverted ? (

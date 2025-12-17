@@ -37,8 +37,6 @@ export type PendingUpload = {
   jobId?: string
   status?: string
   isMonitoring?: boolean
-  deviceProfile?: string // Override global device profile
-  advancedOptions?: Partial<AdvancedOptionsType> // Override global advanced options
   isConverted?: boolean // Flag to indicate this is a converted file
   convertedName?: string // Output filename after conversion
   downloadId?: string // ID for downloading the converted file
@@ -119,8 +117,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [downloadsOpen, setDownloadsOpen] = useState(false)
-
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
 
   const [needsConfiguration, setNeedsConfiguration] = useState(false)
   const [globalConfigPulsate, setGlobalConfigPulsate] = useState(false)
@@ -735,51 +731,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     return {}
   }
 
-  const getFileSettings = (file: PendingUpload) => {
+  const getFileSettings = () => {
     return {
-      deviceProfile: file.deviceProfile || selectedProfile,
-      advancedOptions: file.advancedOptions || advancedOptions,
+      deviceProfile: selectedProfile,
+      advancedOptions: advancedOptions,
     }
-  }
-
-  const updateSelectedFilesSettings = (
-    deviceProfile?: string,
-    advancedOptionsUpdate?: Partial<AdvancedOptionsType>,
-  ) => {
-    setPendingUploads((prev) =>
-      prev.map((file) => {
-        if (selectedFiles.has(file.name)) {
-          return {
-            ...file,
-            deviceProfile: deviceProfile !== undefined ? deviceProfile : file.deviceProfile,
-            advancedOptions: advancedOptionsUpdate
-              ? { ...(file.advancedOptions || advancedOptions), ...advancedOptionsUpdate }
-              : file.advancedOptions,
-          }
-        }
-        return file
-      }),
-    )
-  }
-
-  const toggleFileSelection = (fileName: string) => {
-    setSelectedFiles((prev) => {
-      const newSet = new Set(prev)
-      if (newSet.has(fileName)) {
-        newSet.delete(fileName)
-      } else {
-        newSet.add(fileName)
-      }
-      return newSet
-    })
-  }
-
-  const selectAllFiles = () => {
-    setSelectedFiles(new Set(pendingUploads.map((f) => f.name)))
-  }
-
-  const clearSelection = () => {
-    setSelectedFiles(new Set())
   }
 
   const areSettingsValid = () => {
@@ -948,7 +904,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           device: selectedProfile,
         })
 
-        const fileSettings = getFileSettings(currentFile)
+        const fileSettings = getFileSettings()
         const fileDeviceProfile = fileSettings.deviceProfile
         const fileAdvancedOptions = fileSettings.advancedOptions
 
@@ -1589,11 +1545,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   eta={eta}
                   remainingTime={remainingTime}
                   currentStatus={currentStatus}
-                  selectedFiles={selectedFiles}
-                  onToggleFileSelection={toggleFileSelection}
-                  onSelectAll={selectAllFiles}
-                  onClearSelection={clearSelection}
-                  onUpdateSelectedFiles={updateSelectedFilesSettings}
                   deviceProfiles={DEVICE_PROFILES}
                   onAddMoreFiles={handleAddMoreFiles}
                   onNeedsConfiguration={handleNeedsConfiguration}
@@ -1616,69 +1567,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         <Footer />
       </div>
 
-      {/* CHANGE: Buttons now only show when files are selected via checkbox */}
-      {selectedFiles.size > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-sm border-t shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
-          <div className="max-w-6xl mx-auto p-4">
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={() => setSidebarOpen(true)}
-                className={`flex-1 h-12 ${
-                  globalConfigPulsate || needsConfiguration
-                    ? isComic
-                      ? "bg-yellow-500/20 hover:bg-yellow-500/30 border-yellow-500 animate-pulse shadow-lg"
-                      : "bg-red-600/20 hover:bg-red-600/30 border-red-600 animate-pulse shadow-lg"
-                    : ""
-                }`}
-              >
-                <Settings className="h-5 w-5 mr-2" />
-                Configure
-                {selectedFiles.size > 0 && (
-                  <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-primary text-primary-foreground">
-                    {selectedFiles.size}
-                  </span>
-                )}
-              </Button>
-
-              <Button
-                onClick={handleConvertButtonClick}
-                disabled={isConverting || !isReadyToConvert()}
-                size="lg"
-                className={`flex-1 h-12 text-base transition-all duration-300 ${
-                  isReadyToConvert()
-                    ? isComic
-                      ? "bg-yellow-500 hover:bg-yellow-600 text-black shadow-lg hover:shadow-xl"
-                      : "bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-xl"
-                    : // Added red/yellow with 30% opacity for disabled state
-                      isComic
-                      ? "bg-yellow-500/30 text-yellow-900 dark:text-yellow-100 cursor-not-allowed"
-                      : "bg-red-600/30 text-red-100 cursor-not-allowed"
-                }`}
-              >
-                {isConverting ? (
-                  <>
-                    <LoaderIcon className="mr-2 h-5 w-5 animate-spin" />
-                    Converting {getValidFileCount() > 1 ? `${getValidFileCount()} files` : "file"}...
-                  </>
-                ) : isReadyToConvert() ? (
-                  <>Start Conversion{getValidFileCount() > 1 ? ` (${getValidFileCount()} files)` : ""}</>
-                ) : (
-                  <>
-                    {pendingUploads.length === 0 && "Upload files to start"}
-                    {pendingUploads.length > 0 && getValidFileCount() === 0 && "All files converted"}
-                    {pendingUploads.length > 0 &&
-                      getValidFileCount() > 0 &&
-                      selectedProfile === "Placeholder" &&
-                      "Select a device to continue"}
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetContent className="fixed z-50 gap-4 bg-background p-6 pb-0 shadow-lg transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500 inset-y-0 right-0 h-full border-l data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right w-full sm:max-w-lg overflow-y-auto [&>button]:hidden">
@@ -1693,16 +1581,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           </Button>
 
           <SheetHeader>
-            <SheetTitle>
-              {selectedFiles.size > 0
-                ? `Configure ${selectedFiles.size} Selected File${selectedFiles.size !== 1 ? "s" : ""}`
-                : "Configure Options"}
-            </SheetTitle>
-            <SheetDescription>
-              {selectedFiles.size > 0
-                ? "Changes will apply only to selected files"
-                : "Set default options for all files"}
-            </SheetDescription>
+            <SheetTitle>Configure Options</SheetTitle>
+            <SheetDescription>Set options for all files in queue</SheetDescription>
           </SheetHeader>
 
           <div className="space-y-6 mt-6 pb-32">
@@ -1711,12 +1591,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               <Label className="text-base font-semibold">E-Reader Device</Label>
               <DeviceSelector
                 selectedProfile={selectedProfile}
-                onProfileChange={(profile) => {
-                  setSelectedProfile(profile)
-                  if (selectedFiles.size > 0) {
-                    updateSelectedFilesSettings(profile, undefined)
-                  }
-                }}
+                onProfileChange={setSelectedProfile}
                 deviceProfiles={DEVICE_PROFILES}
               />
             </div>
@@ -1726,12 +1601,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               <Label className="text-base font-semibold">Advanced Options</Label>
               <AdvancedOptions
                 options={advancedOptions}
-                onChange={(newOptions) => {
-                  handleAdvancedOptionsChange(newOptions)
-                  if (selectedFiles.size > 0) {
-                    updateSelectedFilesSettings(undefined, newOptions)
-                  }
-                }}
+                onChange={handleAdvancedOptionsChange}
                 deviceProfile={selectedProfile}
                 contentType={contentType}
               />
