@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ensureSessionKey } from '@/lib/utils'
+import { useSession as useSessionManager } from './use-session'
 
 export interface QueueJob {
   job_id: string
@@ -42,6 +43,7 @@ export function useQueuePolling(
   interval = Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 1500,
   enabled = true
 ) {
+  const { isLoading: sessionLoading } = useSessionManager()
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [isPolling, setIsPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -80,6 +82,7 @@ export function useQueuePolling(
 
       // Get session key
       const sessionKey = await ensureSessionKey()
+      console.log('[useQueuePolling] Fetching with session key:', sessionKey?.substring(0, 8) + '...')
 
       const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
       const response = await fetch(`${API_BASE_URL}/api/queue/status`, {
@@ -91,7 +94,11 @@ export function useQueuePolling(
         signal: abortControllerRef.current.signal,
       })
 
+      console.log('[useQueuePolling] Response status:', response.status, response.statusText)
+
       if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[useQueuePolling] Error response:', errorText)
         throw new Error(`Failed to fetch queue status: ${response.statusText}`)
       }
 
@@ -125,8 +132,8 @@ export function useQueuePolling(
 
   // Set up polling interval
   useEffect(() => {
-    if (!enabled) {
-      // Clear interval if disabled
+    if (!enabled || sessionLoading) {
+      // Clear interval if disabled or session is still loading
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
         intervalRef.current = null
@@ -134,7 +141,7 @@ export function useQueuePolling(
       return
     }
 
-    // Initial fetch
+    // Initial fetch (only after session is ready)
     fetchQueueStatus()
 
     // Set up interval
@@ -157,7 +164,7 @@ export function useQueuePolling(
       }
       window.removeEventListener('beforeunload', handleBeforeUnload)
     }
-  }, [fetchQueueStatus, interval, enabled])
+  }, [fetchQueueStatus, interval, enabled, sessionLoading])
 
   // Manual refresh function
   const refresh = useCallback(() => {

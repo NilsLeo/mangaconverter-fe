@@ -3,7 +3,8 @@
  * Handles anonymous session creation and Clerk user claiming
  */
 
-const LICENSE_KEY = "sessionKey"
+// Use the same storage key as utils.ts to avoid conflicts
+const LICENSE_KEY = "mangaconverter_session_key"
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5500"
 
 /**

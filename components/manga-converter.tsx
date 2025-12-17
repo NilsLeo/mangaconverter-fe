@@ -23,6 +23,11 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { useConverterMode } from "@/contexts/converter-mode-context"
 import { useQueuePolling, type QueueJob } from "@/hooks/useQueuePolling"
+import { MyDownloads } from "./my-downloads"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { ChevronDown, ChevronUp, Download as DownloadIcon } from "lucide-react"
+import { useUser } from "@clerk/nextjs"
+import { SignInButton, SignUpButton } from "@clerk/nextjs"
 
 export type PendingUpload = {
   name: string
@@ -99,6 +104,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const { mode } = useConverterMode()
   const isManga = mode === "manga"
   const isComic = mode === "comic"
+  const { user, isLoaded: isUserLoaded } = useUser()
 
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>("Placeholder")
@@ -112,6 +118,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [currentStatus, setCurrentStatus] = useState<string | undefined>(undefined)
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [downloadsOpen, setDownloadsOpen] = useState(false)
 
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
 
@@ -1472,6 +1479,66 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               </Alert>
             )}
           </div>
+        )}
+
+        {/* Signup CTA for anonymous users */}
+        {isUserLoaded && !user && (
+          <Alert>
+            <DownloadIcon className="h-4 w-4" />
+            <AlertDescription>
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex flex-col gap-1">
+                  <span className="font-medium">Your files will be available for 24 hours</span>
+                  <span className="text-sm text-muted-foreground">
+                    Sign up to access your converted files across all devices and keep them longer!
+                  </span>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <SignInButton mode="modal">
+                    <Button variant="ghost" size="sm">
+                      Login
+                    </Button>
+                  </SignInButton>
+                  <SignUpButton mode="modal">
+                    <Button size="sm">Sign Up</Button>
+                  </SignUpButton>
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* My Downloads - Collapsible for logged-in users */}
+        {isUserLoaded && user && (
+          <Collapsible open={downloadsOpen} onOpenChange={setDownloadsOpen}>
+            <CollapsibleTrigger asChild>
+              <Card className="cursor-pointer hover:border-primary/50 transition-colors">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <DownloadIcon className="h-5 w-5" />
+                      <div>
+                        <CardTitle>My Downloads</CardTitle>
+                        <CardDescription className="mt-1">
+                          {downloadsOpen
+                            ? "Click to collapse"
+                            : "All your converted files across devices • Files available for 24 hours"}
+                        </CardDescription>
+                      </div>
+                    </div>
+                    {downloadsOpen ? (
+                      <ChevronUp className="h-5 w-5 text-muted-foreground shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-5 w-5 text-muted-foreground shrink-0" />
+                    )}
+                  </div>
+                </CardHeader>
+              </Card>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-3">
+              <MyDownloads limit={50} />
+            </CollapsibleContent>
+          </Collapsible>
         )}
 
         <Card>
