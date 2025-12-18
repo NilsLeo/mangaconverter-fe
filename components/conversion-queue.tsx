@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Loader2, FileText, AlertTriangle, X, Download, XCircle } from "lucide-react"
+import { Loader2, FileText, AlertTriangle, X, Download, XCircle, Settings } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { motion } from "framer-motion"
@@ -34,6 +34,9 @@ interface ConversionQueueProps {
   deviceProfiles?: Record<string, string>
   onAddMoreFiles?: () => void
   onNeedsConfiguration?: () => void
+  onOpenSidebar?: () => void
+  onStartConversion?: () => void
+  isReadyToConvert?: () => boolean
 }
 
 export function ConversionQueue({
@@ -58,6 +61,9 @@ export function ConversionQueue({
   deviceProfiles = {},
   onAddMoreFiles,
   onNeedsConfiguration,
+  onOpenSidebar,
+  onStartConversion,
+  isReadyToConvert,
 }: ConversionQueueProps) {
   const [items, setItems] = useState(pendingUploads)
   const [downloadingFiles, setDownloadingFiles] = useState<Record<string, boolean>>({})
@@ -646,6 +652,45 @@ export function ConversionQueue({
           <FileText className="mr-2 h-4 w-4" />
           Add more files
         </Button>
+      )}
+
+      {onOpenSidebar && onStartConversion && (
+        <div className="flex flex-col gap-3 mt-4 w-full">
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={() => {
+              if (hasActiveJobs()) {
+                toast.info("Please wait", {
+                  description: "Wait for current files to finish converting before changing settings.",
+                })
+                return
+              }
+              onOpenSidebar()
+            }}
+            disabled={hasActiveJobs()}
+            className="w-full"
+          >
+            <Settings className="h-5 w-5 mr-2" />
+            Configure Options
+          </Button>
+          <Button
+            size="lg"
+            onClick={() => {
+              if (hasActiveJobs()) {
+                toast.info("Please wait", {
+                  description: "Wait for current files to finish converting before starting a new batch.",
+                })
+                return
+              }
+              onStartConversion()
+            }}
+            disabled={isConverting || hasActiveJobs() || (isReadyToConvert && !isReadyToConvert())}
+            className="w-full"
+          >
+            {isConverting ? "Converting..." : "Start Conversion"}
+          </Button>
+        </div>
       )}
     </div>
   )
