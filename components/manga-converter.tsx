@@ -851,8 +851,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     const filesToProcess = filesToConvert
     let hasErrors = false
 
-    for (let i = 0; i < filesToProcess.length; i++) {
-      const currentFile = filesToProcess[i]
+    // Process all files in parallel instead of sequentially
+    const uploadPromises = filesToProcess.map(async (currentFile, i) => {
 
       // Use a local variable for jobId within this loop iteration
       let jobId: string = currentFile.jobId || "" // Initialize jobId for the current file
@@ -1075,11 +1075,10 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           duration: 8000,
         })
       }
+    })
 
-      if (i < filesToProcess.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 500))
-      }
-    }
+    // Wait for all files to complete uploading and converting in parallel
+    await Promise.all(uploadPromises)
 
     log("All files processed", { totalFiles: filesToProcess.length })
 
