@@ -860,7 +860,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       // Skip if the file is already being monitored (e.g., reloaded page)
       if (currentFile.isMonitoring && currentFile.jobId) {
         log("Skipping already monitored job", currentFile.jobId, { filename: currentFile.name })
-        continue
+        return // Return early in map, equivalent to continue in for loop
       }
 
       const toastId = toast.loading(`Converting ${currentFile.name}... (${i + 1}/${filesToProcess.length})`, {
@@ -913,7 +913,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               description: `File "${currentFile.name}": Custom width, height, and output format (not 'Auto') are required when using 'Other' device profile.`,
             })
             hasErrors = true
-            continue
+            return // Return early in map, equivalent to continue in for loop
           }
 
           if (fileAdvancedOptions.customWidth <= 0 || fileAdvancedOptions.customHeight <= 0) {
@@ -921,7 +921,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               description: `File "${currentFile.name}": Custom width and height must be greater than 0.`,
             })
             hasErrors = true
-            continue
+            return // Return early in map, equivalent to continue in for loop
           }
         }
 
