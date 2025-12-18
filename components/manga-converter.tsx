@@ -772,11 +772,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       return
     }
 
-    // Apply settings to selected files if any are selected
-    if (selectedFiles.size > 0) {
-      updateSelectedFilesSettings(selectedProfile, advancedOptions)
-      toast.success(`Settings applied to ${selectedFiles.size} file${selectedFiles.size !== 1 ? "s" : ""}`)
-    }
+    // Settings are automatically applied to all files in queue (global config)
+    toast.success("Settings saved")
 
     // Close sidebar
     setSidebarOpen(false)
