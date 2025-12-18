@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Loader2, FileText, AlertTriangle, X, Download, Play, XCircle, Settings } from "lucide-react"
+import { Loader2, FileText, AlertTriangle, X, Download, XCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { motion } from "framer-motion"
@@ -16,7 +16,6 @@ interface ConversionQueueProps {
   pendingUploads: PendingUpload[]
   isConverting: boolean
   onConvert: () => void
-  onConvertSingle?: (file: PendingUpload) => void
   onCancelJob?: (file: PendingUpload) => void
   selectedProfile: string
   globalAdvancedOptions?: AdvancedOptionsType
@@ -35,14 +34,12 @@ interface ConversionQueueProps {
   deviceProfiles?: Record<string, string>
   onAddMoreFiles?: () => void
   onNeedsConfiguration?: () => void
-  onConfigureFile?: (file: PendingUpload) => void
 }
 
 export function ConversionQueue({
   pendingUploads,
   isConverting,
   onConvert,
-  onConvertSingle,
   onCancelJob,
   dismissingJobs = new Set(),
   cancellingJobs = new Set(),
@@ -61,14 +58,11 @@ export function ConversionQueue({
   deviceProfiles = {},
   onAddMoreFiles,
   onNeedsConfiguration,
-  onConfigureFile,
 }: ConversionQueueProps) {
   const [items, setItems] = useState(pendingUploads)
   const [downloadingFiles, setDownloadingFiles] = useState<Record<string, boolean>>({})
-  const [pulsatingConfigFile, setPulsatingConfigFile] = useState<string | null>(null)
   const [dynamicEta, setDynamicEta] = useState<number | undefined>(eta)
   const [dynamicRemainingTime, setDynamicRemainingTime] = useState<number | undefined>(remainingTime)
-  const [startingFiles, setStartingFiles] = useState<Set<string>>(new Set())
   const [initialRemainingTime, setInitialRemainingTime] = useState<number | undefined>(undefined)
   const [uploadEta, setUploadEta] = useState<number | undefined>(undefined)
   const [lastUploadProgress, setLastUploadProgress] = useState<number>(0)
@@ -187,17 +181,6 @@ export function ConversionQueue({
     return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
   }
 
-  // Clean up starting files when they become running jobs
-  useEffect(() => {
-    const runningJobFiles = pendingUploads.filter(file => isJobRunning(file)).map(file => file.name)
-    if (runningJobFiles.length > 0) {
-      setStartingFiles(prev => {
-        const newSet = new Set(prev)
-        runningJobFiles.forEach(fileName => newSet.delete(fileName))
-        return newSet
-      })
-    }
-  }, [pendingUploads])
 
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return "0 Bytes"
@@ -454,29 +437,6 @@ export function ConversionQueue({
     }
   }
 
-  const handleDisabledButtonClick = () => {
-    if (selectedProfile === "Placeholder" && onNeedsConfiguration) {
-      onNeedsConfiguration()
-      toast.warning("Configuration required", {
-        description: "Please configure your device settings before starting conversion.",
-      })
-    }
-  }
-
-  const handlePerJobStartClick = (file: PendingUpload) => {
-    const needsConfig = selectedProfile === "Placeholder"
-
-    if (needsConfig) {
-      setPulsatingConfigFile(file.name)
-      setTimeout(() => setPulsatingConfigFile(null), 3000)
-
-      handleDisabledButtonClick()
-    } else if (onConvertSingle) {
-      // Mark file as starting
-      setStartingFiles(prev => new Set(prev).add(file.name))
-      onConvertSingle(file)
-    }
-  }
 
   return (
     <div className="space-y-3">
@@ -484,9 +444,6 @@ export function ConversionQueue({
         const progressInfo = getProgressInfo(file, index)
         const isActive = isConverting && index === 0
         const jobRunning = isJobRunning(file)
-        const needsConfig = selectedProfile === "Placeholder"
-        const shouldPulsate = pulsatingConfigFile === file.name
-        const isStarting = startingFiles.has(file.name)
 
         return (
           <motion.div
@@ -582,45 +539,6 @@ export function ConversionQueue({
                       </Button>
                     )}
 
-                    {!file.isConverted && !file.error && !jobRunning && onConfigureFile && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onConfigureFile(file)}
-                        className={`shadow-sm ${shouldPulsate ? "animate-pulse border-primary bg-primary/10" : ""}`}
-                        title="Configure this file"
-                      >
-                        <Settings className="h-4 w-4" />
-                      </Button>
-                    )}
-
-                    {!file.isConverted && !file.error && !jobRunning && onConvertSingle && (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={() => handlePerJobStartClick(file)}
-                        disabled={isStarting}
-                        className={`shadow-sm ${
-                          needsConfig
-                            ? "bg-yellow-500/30 hover:bg-yellow-500/40 text-yellow-900 dark:text-yellow-100 cursor-not-allowed"
-                            : isStarting
-                              ? "opacity-70 cursor-not-allowed"
-                              : ""
-                        }`}
-                      >
-                        {isStarting ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Waiting
-                          </>
-                        ) : (
-                          <>
-                            <Play className="h-4 w-4 mr-2" />
-                            Start
-                          </>
-                        )}
-                      </Button>
-                    )}
 
                     {isActive && currentStatus === "PROCESSING" && (
                       <Loader2 className="h-5 w-5 animate-spin text-primary" />

@@ -141,10 +141,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     setTimeout(() => setGlobalConfigPulsate(false), 3000)
   }
 
-  const handleConfigureFile = (file: PendingUpload) => {
-    // Open the sidebar
-    setSidebarOpen(true)
-  }
 
   const [advancedOptions, setAdvancedOptions] = useState<AdvancedOptionsType>({
     mangaStyle: isManga,
@@ -1100,65 +1096,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     setIsConverting(false)
   }
 
-  const handleConvertSingle = async (file: PendingUpload) => {
-    log(`[${new Date().toISOString()}] Single file conversion started for:`, file.name)
-
-    if (file.isConverted) {
-      toast.info("File already converted", {
-        description: "This file has already been converted.",
-      })
-      return
-    }
-
-    if (selectedProfile === "Placeholder") {
-      setNeedsConfiguration(true)
-      toast.warning("No device selected", {
-        description: "Please select your E-Reader device before starting the conversion.",
-      })
-      return
-    }
-
-    // Validate advanced options for OTHER profile
-    if (selectedProfile === "OTHER") {
-      const fileSettings = getFileSettings(file)
-      const fileAdvancedOptions = fileSettings.advancedOptions
-
-      if (
-        !fileAdvancedOptions.customWidth ||
-        !fileAdvancedOptions.customHeight ||
-        !fileAdvancedOptions.outputFormat ||
-        fileAdvancedOptions.outputFormat === "Auto"
-      ) {
-        toast.warning("Missing required settings", {
-          description:
-            "Custom width, height, and output format (not 'Auto') are required when using 'Other' device profile. Please configure them in Advanced Options.",
-        })
-        return
-      }
-
-      if (fileAdvancedOptions.customWidth <= 0 || fileAdvancedOptions.customHeight <= 0) {
-        toast.warning("Invalid dimensions", {
-          description: "Custom width and height must be greater than 0.",
-        })
-        return
-      }
-    }
-
-    // Session key is already initialized on page load, no need to call ensureSessionKey() here
-
-    // Create a temporary conversion queue with just this file
-    const tempQueue = [file]
-
-    // Reuse the existing conversion logic by temporarily setting pendingUploads
-    const originalQueue = [...pendingUploads]
-    setPendingUploads(tempQueue)
-
-    // Call the main conversion handler
-    await handleConvert()
-
-    // Restore the original queue (the conversion will have updated the file status)
-    // Note: We don't actually restore because handleConvert already updates the state correctly
-  }
 
   const handleCancelJob = async (file: PendingUpload) => {
     if (!file.jobId) {
@@ -1529,7 +1466,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   pendingUploads={pendingUploads}
                   isConverting={isConverting}
                   onConvert={handleConvert}
-                  onConvertSingle={handleConvertSingle}
                   onCancelJob={handleCancelJob}
                   selectedProfile={selectedProfile}
                   globalAdvancedOptions={advancedOptions}
@@ -1548,7 +1484,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   deviceProfiles={DEVICE_PROFILES}
                   onAddMoreFiles={handleAddMoreFiles}
                   onNeedsConfiguration={handleNeedsConfiguration}
-                  onConfigureFile={handleConfigureFile}
                 />
                 <input
                   type="file"
