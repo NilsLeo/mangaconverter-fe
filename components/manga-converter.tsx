@@ -757,6 +757,14 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     return true
   }
 
+  const hasActiveJobs = () => {
+    // Check if any jobs are currently uploading, queued, or processing
+    return pendingUploads.some(
+      (file) =>
+        file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
+    )
+  }
+
   const handleApplySettings = () => {
     if (!areSettingsValid()) {
       if (selectedProfile === "Placeholder") {
@@ -1507,6 +1515,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 variant="outline"
                 size="lg"
                 onClick={() => setSidebarOpen(true)}
+                disabled={hasActiveJobs()}
                 className={`flex-1 h-12 ${
                   globalConfigPulsate || needsConfiguration
                     ? isComic
@@ -1521,7 +1530,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
               <Button
                 onClick={handleConvertButtonClick}
-                disabled={isConverting || !isReadyToConvert()}
+                disabled={isConverting || !isReadyToConvert() || hasActiveJobs()}
                 size="lg"
                 className={`flex-1 h-12 text-base transition-all duration-300 ${
                   isReadyToConvert()

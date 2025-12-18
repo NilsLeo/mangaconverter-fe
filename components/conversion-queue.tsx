@@ -181,6 +181,9 @@ export function ConversionQueue({
     return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
   }
 
+  const hasActiveJobs = () => {
+    return pendingUploads.some((file) => isJobRunning(file))
+  }
 
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return "0 Bytes"
@@ -629,7 +632,7 @@ export function ConversionQueue({
         <Button
           variant="outline"
           onClick={onAddMoreFiles}
-          disabled={isConverting}
+          disabled={isConverting || hasActiveJobs()}
           className="w-full h-12 border-dashed hover:border-primary hover:bg-primary/5 bg-transparent"
         >
           <FileText className="mr-2 h-4 w-4" />
