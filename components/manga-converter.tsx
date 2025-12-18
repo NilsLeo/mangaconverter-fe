@@ -1502,6 +1502,64 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         <Footer />
       </div>
 
+      {/* Global Configure and Start Conversion buttons - shown when files in queue */}
+      {pendingUploads.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-sm border-t shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+          <div className="max-w-6xl mx-auto p-4">
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => setSidebarOpen(true)}
+                className={`flex-1 h-12 ${
+                  globalConfigPulsate || needsConfiguration
+                    ? isComic
+                      ? "bg-yellow-500/20 hover:bg-yellow-500/30 border-yellow-500 animate-pulse shadow-lg"
+                      : "bg-red-600/20 hover:bg-red-600/30 border-red-600 animate-pulse shadow-lg"
+                    : ""
+                }`}
+              >
+                <Settings className="h-5 w-5 mr-2" />
+                Configure Options
+              </Button>
+
+              <Button
+                onClick={handleConvertButtonClick}
+                disabled={isConverting || !isReadyToConvert()}
+                size="lg"
+                className={`flex-1 h-12 text-base transition-all duration-300 ${
+                  isReadyToConvert()
+                    ? isComic
+                      ? "bg-yellow-500 hover:bg-yellow-600 text-black shadow-lg hover:shadow-xl"
+                      : "bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-xl"
+                    : // Added red/yellow with 30% opacity for disabled state
+                      isComic
+                      ? "bg-yellow-500/30 text-yellow-900 dark:text-yellow-100 cursor-not-allowed"
+                      : "bg-red-600/30 text-red-100 cursor-not-allowed"
+                }`}
+              >
+                {isConverting ? (
+                  <>
+                    <LoaderIcon className="mr-2 h-5 w-5 animate-spin" />
+                    Converting {getValidFileCount() > 1 ? `${getValidFileCount()} files` : "file"}...
+                  </>
+                ) : isReadyToConvert() ? (
+                  <>Start Conversion{getValidFileCount() > 1 ? ` (${getValidFileCount()} files)` : ""}</>
+                ) : (
+                  <>
+                    {pendingUploads.length === 0 && "Upload files to start"}
+                    {pendingUploads.length > 0 && getValidFileCount() === 0 && "All files converted"}
+                    {pendingUploads.length > 0 &&
+                      getValidFileCount() > 0 &&
+                      selectedProfile === "Placeholder" &&
+                      "Select a device to continue"}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetContent className="fixed z-50 gap-4 bg-background p-6 pb-0 shadow-lg transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500 inset-y-0 right-0 h-full border-l data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right w-full sm:max-w-lg overflow-y-auto [&>button]:hidden">
