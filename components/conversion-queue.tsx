@@ -631,7 +631,15 @@ export function ConversionQueue({
       {onAddMoreFiles && (
         <Button
           variant="outline"
-          onClick={onAddMoreFiles}
+          onClick={() => {
+            if (hasActiveJobs()) {
+              toast.info("Please wait", {
+                description: "Wait for current files to finish converting before adding more files.",
+              })
+              return
+            }
+            onAddMoreFiles()
+          }}
           disabled={isConverting || hasActiveJobs()}
           className="w-full h-12 border-dashed hover:border-primary hover:bg-primary/5 bg-transparent"
         >

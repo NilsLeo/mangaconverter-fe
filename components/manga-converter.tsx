@@ -1514,7 +1514,15 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               <Button
                 variant="outline"
                 size="lg"
-                onClick={() => setSidebarOpen(true)}
+                onClick={() => {
+                  if (hasActiveJobs()) {
+                    toast.info("Please wait", {
+                      description: "Wait for current files to finish converting before changing settings.",
+                    })
+                    return
+                  }
+                  setSidebarOpen(true)
+                }}
                 disabled={hasActiveJobs()}
                 className={`flex-1 h-12 ${
                   globalConfigPulsate || needsConfiguration
@@ -1529,7 +1537,15 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               </Button>
 
               <Button
-                onClick={handleConvertButtonClick}
+                onClick={() => {
+                  if (hasActiveJobs()) {
+                    toast.info("Please wait", {
+                      description: "Wait for current files to finish converting before starting a new batch.",
+                    })
+                    return
+                  }
+                  handleConvertButtonClick()
+                }}
                 disabled={isConverting || !isReadyToConvert() || hasActiveJobs()}
                 size="lg"
                 className={`flex-1 h-12 text-base transition-all duration-300 ${
