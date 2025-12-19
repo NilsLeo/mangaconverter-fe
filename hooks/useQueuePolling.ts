@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ensureSessionKey } from '@/lib/utils'
 import { useSession as useSessionManager } from './use-session'
+import { removeSessionKey, getOrCreateAnonymousSession } from '@/lib/session'
 
 export interface QueueJob {
   job_id: string
@@ -99,6 +100,23 @@ export function useQueuePolling(
       if (!response.ok) {
         const errorText = await response.text()
         console.error('[useQueuePolling] Error response:', errorText)
+
+        // If we get a 401, the session is invalid - clear it and get a new one
+        if (response.status === 401) {
+          console.warn('[useQueuePolling] 401 Unauthorized - clearing invalid session and creating new one')
+          removeSessionKey()
+
+          // Get a new session for next request
+          try {
+            const newSessionKey = await getOrCreateAnonymousSession()
+            console.log('[useQueuePolling] Created new session:', newSessionKey?.substring(0, 8) + '...')
+          } catch (sessionError) {
+            console.error('[useQueuePolling] Failed to create new session:', sessionError)
+          }
+
+          throw new Error('Session expired. Please try again.')
+        }
+
         throw new Error(`Failed to fetch queue status: ${response.statusText}`)
       }
 

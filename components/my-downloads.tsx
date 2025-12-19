@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useSession } from "@/hooks/use-session"
+import { removeSessionKey, getOrCreateAnonymousSession } from "@/lib/session"
 
 export type UserDownload = {
   job_id: string
@@ -84,6 +85,19 @@ export function MyDownloads({ limit = 100 }: MyDownloadsProps) {
       if (!response.ok) {
         const data = await response.json()
         console.error('[MyDownloads] Error response:', data)
+
+        // If we get a 401, the session is invalid - clear it and reload
+        if (response.status === 401) {
+          console.warn('[MyDownloads] 401 Unauthorized - clearing invalid session')
+          removeSessionKey()
+          toast.error("Session expired", {
+            description: "Please refresh the page to continue.",
+          })
+          // Trigger page reload after short delay
+          setTimeout(() => window.location.reload(), 2000)
+          return
+        }
+
         throw new Error(data.error || "Failed to fetch downloads")
       }
 

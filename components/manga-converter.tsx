@@ -655,6 +655,14 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         if (response.ok) {
           log(`Job ${file.jobId} dismissed successfully - backend will filter from next poll`)
           toast.success(`Dismissed: ${file.name}`)
+        } else if (response.status === 401) {
+          // Session expired - clear it and reload page
+          console.warn('[MangaConverter] 401 on cancel - clearing session')
+          localStorage.removeItem('mangaconverter_session_key')
+          toast.error('Session expired', {
+            description: 'Please refresh the page to continue.',
+          })
+          setTimeout(() => window.location.reload(), 2000)
         } else {
           logError(`Failed to dismiss job ${file.jobId}:`, await response.text())
           toast.error(`Failed to dismiss: ${file.name}`)
