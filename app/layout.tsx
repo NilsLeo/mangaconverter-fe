@@ -113,6 +113,17 @@ export default function RootLayout({
           <meta name="msapplication-TileColor" content="#8b5cf6" />
           <meta name="msapplication-tap-highlight" content="no" />
           <meta name="theme-color" content="#8b5cf6" />
+
+          {/* Privacy-friendly analytics by Plausible */}
+          <script async src="https://plausible.io/js/pa-7QeSUnhaJo56JwKrcEOR7.js"></script>
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `
+                window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+                plausible.init()
+              `,
+            }}
+          />
         </head>
         <body className={`${mplus.variable} ${kosugiMaru.variable} ${zenMaruGothic.variable} antialiased`}>
           <ErrorBoundary>
