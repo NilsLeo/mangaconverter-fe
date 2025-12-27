@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ensureSessionKey } from '@/lib/utils'
+import { getSessionKey, removeSessionKey, ensureSession } from '@/lib/session'
 import { useSession as useSessionManager } from './use-session'
-import { removeSessionKey, getOrCreateAnonymousSession } from '@/lib/session'
 
 export interface QueueJob {
   job_id: string
-  filename: string
+  filename: string // input filename
+  output_filename?: string // output filename (only present for COMPLETE jobs)
   status: 'UPLOADING' | 'QUEUED' | 'PROCESSING' | 'COMPLETE' | 'ERRORED' | 'CANCELLED'
   device_profile: string
   file_size: number
+  output_file_size?: number // output file size (only present for COMPLETE jobs)
   upload_progress?: {
     completed_parts: number
     total_parts: number
@@ -81,8 +82,15 @@ export function useQueuePolling(
       setIsPolling(true)
       setError(null)
 
-      // Get session key
-      const sessionKey = await ensureSessionKey()
+      // Only poll if a session already exists - don't create one
+      // This prevents bot sessions from being created just for polling
+      const sessionKey = getSessionKey()
+      if (!sessionKey) {
+        // No session yet - skip polling silently
+        // Session will be created on first user interaction
+        return
+      }
+
       console.log('[useQueuePolling] Fetching with session key:', sessionKey?.substring(0, 8) + '...')
 
       const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
@@ -101,20 +109,23 @@ export function useQueuePolling(
         const errorText = await response.text()
         console.error('[useQueuePolling] Error response:', errorText)
 
-        // If we get a 401, the session is invalid - clear it and get a new one
+        // If we get a 401, the session is invalid - clear it and create a new one
         if (response.status === 401) {
-          console.warn('[useQueuePolling] 401 Unauthorized - clearing invalid session and creating new one')
+          console.warn('[useQueuePolling] 401 Unauthorized - session expired or abandoned')
           removeSessionKey()
 
-          // Get a new session for next request
           try {
-            const newSessionKey = await getOrCreateAnonymousSession()
-            console.log('[useQueuePolling] Created new session:', newSessionKey?.substring(0, 8) + '...')
+            // Create a new session automatically
+            console.log('[useQueuePolling] Creating new session after 401...')
+            const newSession = await ensureSession()
+            console.log('[useQueuePolling] New session created:', newSession?.substring(0, 8) + '...')
+
+            // Session is now available for next poll
+            return
           } catch (sessionError) {
             console.error('[useQueuePolling] Failed to create new session:', sessionError)
+            throw new Error('Session expired and could not create new session.')
           }
-
-          throw new Error('Session expired. Please try again.')
         }
 
         throw new Error(`Failed to fetch queue status: ${response.statusText}`)

@@ -64,7 +64,10 @@ export function HelpDialog({ children }: HelpDialogProps) {
                   <li>.zip - ZIP archive containing images</li>
                   <li>.cbr - Comic Book RAR</li>
                   <li>.rar - RAR archive containing images</li>
+                  <li>.cb7 - Comic Book 7Z</li>
+                  <li>.7z - 7Z archive containing images</li>
                   <li>.pdf - PDF document</li>
+                  <li>.epub - EPUB ebook</li>
                 </ul>
               </div>
             </div>

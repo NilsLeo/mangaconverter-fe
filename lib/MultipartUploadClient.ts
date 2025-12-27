@@ -121,11 +121,21 @@ export class MultipartUploadClient {
       })
 
       // Step 2 & 3: Split file into parts and START UPLOADING IMMEDIATELY
-      // Don't wait for all parts to be created - start uploading as soon as first part is ready
-      const uploadParts = this.createParts(file, parts)
+      // Progressive upload: Start with initial batch, fetch more URLs in background
+      const initialParts = this.createParts(file, parts)
 
-      // Upload all parts in parallel with concurrency limit (all start immediately)
-      await this.uploadParts(jobId, uploadParts, onProgress)
+      // Check if we need to fetch more parts
+      const needsMoreParts = initResponse.has_more_parts
+      const nextPartNumber = initResponse.next_part_number
+
+      // Upload with progressive part fetching
+      await this.uploadPartsProgressive(
+        jobId,
+        file,
+        initialParts,
+        onProgress,
+        needsMoreParts ? nextPartNumber : null
+      )
 
       // Step 4: Finalize upload
       log("[MULTIPART] Finalizing upload", { job_id: jobId })
@@ -167,7 +177,7 @@ export class MultipartUploadClient {
   }
 
   /**
-   * Step 1: Initiate multipart upload with backend
+   * Step 1: Initiate multipart upload with backend (returns first batch of URLs)
    */
   private async initiateUpload(jobId: string, fileSize: number) {
     const response = await fetch(
@@ -181,6 +191,7 @@ export class MultipartUploadClient {
         body: JSON.stringify({
           file_size: fileSize,
           part_size: this.config.partSize,
+          initial_batch_size: 20, // Get first 20 URLs immediately
         }),
       }
     )
@@ -190,6 +201,35 @@ export class MultipartUploadClient {
         error: "Failed to initiate upload",
       }))
       throw new Error(error.error || "Failed to initiate upload")
+    }
+
+    return await response.json()
+  }
+
+  /**
+   * Fetch additional batches of presigned URLs (for progressive upload)
+   */
+  private async fetchPartsBatch(jobId: string, startPart: number, batchSize: number = 20) {
+    const response = await fetch(
+      `${this.apiBaseUrl}/jobs/${jobId}/multipart/get-parts`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Session-Key": this.sessionKey,
+        },
+        body: JSON.stringify({
+          start_part: startPart,
+          batch_size: batchSize,
+        }),
+      }
+    )
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({
+        error: "Failed to fetch parts batch",
+      }))
+      throw new Error(error.error || "Failed to fetch parts batch")
     }
 
     return await response.json()
@@ -221,7 +261,191 @@ export class MultipartUploadClient {
   }
 
   /**
-   * Step 3: Upload parts with concurrency control and retry logic
+   * Upload parts progressively - fetch additional URL batches as needed
+   * OPTIMIZED: Start uploading immediately with first batch, fetch more in background
+   */
+  private async uploadPartsProgressive(
+    jobId: string,
+    file: File,
+    initialParts: UploadPart[],
+    onProgress?: (progress: UploadProgress) => void,
+    nextPartToFetch?: number | null
+  ): Promise<void> {
+    const allParts: UploadPart[] = [...initialParts]
+    let isFetchingMore = false
+    let fetchError: Error | null = null
+
+    // Background task to fetch additional URL batches
+    const fetchMoreParts = async () => {
+      if (!nextPartToFetch || isFetchingMore) return
+
+      isFetchingMore = true
+      try {
+        log("[MULTIPART] Fetching additional URL batch in background", {
+          job_id: jobId,
+          start_part: nextPartToFetch,
+        })
+
+        const batchResponse = await this.fetchPartsBatch(jobId, nextPartToFetch, 20)
+        const newParts = this.createParts(file, batchResponse.parts)
+
+        // Add new parts to the queue
+        allParts.push(...newParts)
+
+        log("[MULTIPART] Fetched additional URL batch", {
+          job_id: jobId,
+          fetched_parts: newParts.length,
+          total_parts_available: allParts.length,
+        })
+
+        // Update nextPartToFetch for next batch
+        if (batchResponse.has_more_parts) {
+          nextPartToFetch = batchResponse.next_part_number
+        } else {
+          nextPartToFetch = null
+        }
+      } catch (error) {
+        fetchError = error as Error
+        logError("[MULTIPART] Failed to fetch additional parts", {
+          job_id: jobId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        isFetchingMore = false
+      }
+    }
+
+    // Start fetching next batch immediately if needed
+    if (nextPartToFetch) {
+      fetchMoreParts()
+    }
+
+    // Upload parts with automatic batch fetching
+    const totalParts = allParts.length // Will grow as we fetch more
+    let completedParts = 0
+    let uploadedBytes = 0
+    const totalBytes = file.size
+
+    const storageKey = `multipart_upload_${jobId}`
+    const heartbeatInterval = setInterval(() => {
+      if (!this.aborted) {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            sessionId: this.uploadSessionId,
+            timestamp: Date.now(),
+            jobId: jobId,
+            progress: {
+              completed: completedParts,
+              total: totalParts,
+            },
+          })
+        )
+      }
+    }, 10000)
+
+    try {
+      const activeTasks = new Set<Promise<void>>()
+      let partIndex = 0
+
+      const uploadNext = async () => {
+        while (true) {
+          if (this.aborted) {
+            throw new Error("Upload aborted")
+          }
+
+          // Check if we've uploaded all parts
+          if (partIndex >= allParts.length && !nextPartToFetch) {
+            break
+          }
+
+          // Wait if we're at max concurrency
+          while (activeTasks.size >= this.config.maxConcurrentParts) {
+            await Promise.race(activeTasks)
+          }
+
+          // If no parts available but more are coming, wait for fetch
+          if (partIndex >= allParts.length && nextPartToFetch) {
+            if (!isFetchingMore) {
+              await fetchMoreParts()
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 100))
+            }
+            continue
+          }
+
+          // Throw if fetch failed
+          if (fetchError) {
+            throw fetchError
+          }
+
+          // No more parts to upload
+          if (partIndex >= allParts.length) {
+            break
+          }
+
+          const part = allParts[partIndex++]
+
+          const uploadTask = this.uploadPart(jobId, part)
+            .then(() => {
+              completedParts++
+              uploadedBytes += part.blob.size
+
+              if (onProgress) {
+                onProgress({
+                  completedParts,
+                  totalParts,
+                  uploadedBytes,
+                  totalBytes,
+                  percentage: (uploadedBytes / totalBytes) * 100,
+                })
+              }
+
+              log("[MULTIPART] Part completed and confirmed by backend", {
+                job_id: jobId,
+                part_number: part.partNumber,
+                completed: completedParts,
+                total: totalParts,
+                percentage: ((uploadedBytes / totalBytes) * 100).toFixed(1) + "%",
+              })
+
+              // Trigger next batch fetch when we're getting close to running out
+              if (
+                nextPartToFetch &&
+                !isFetchingMore &&
+                partIndex >= allParts.length - 5
+              ) {
+                fetchMoreParts()
+              }
+            })
+            .catch((error) => {
+              logError("[MULTIPART] Part upload failed", {
+                job_id: jobId,
+                part_number: part.partNumber,
+                error: error instanceof Error ? error.message : String(error),
+              })
+              throw error
+            })
+            .finally(() => {
+              activeTasks.delete(uploadTask)
+            })
+
+          activeTasks.add(uploadTask)
+        }
+      }
+
+      await uploadNext()
+
+      if (activeTasks.size > 0) {
+        await Promise.all(activeTasks)
+      }
+    } finally {
+      clearInterval(heartbeatInterval)
+    }
+  }
+
+  /**
+   * Step 3: Upload parts with concurrency control and retry logic (LEGACY - kept for compatibility)
    * OPTIMIZED: All parts start immediately, no waiting for slots
    */
   private async uploadParts(

@@ -36,7 +36,8 @@ interface MyDownloadsProps {
 }
 
 export function MyDownloads({ limit = 100 }: MyDownloadsProps) {
-  const { sessionKey, isLoading: sessionLoading, error: sessionError, isAnonymous } = useSession()
+  // Auto-initialize session for this component since it needs to fetch user data
+  const { sessionKey, isLoading: sessionLoading, error: sessionError, isAnonymous } = useSession({ autoInitialize: true })
   const [downloads, setDownloads] = useState<UserDownload[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

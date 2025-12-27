@@ -73,6 +73,8 @@ export function ConversionQueue({
   const [uploadEta, setUploadEta] = useState<number | undefined>(undefined)
   const [lastUploadProgress, setLastUploadProgress] = useState<number>(0)
   const [lastUploadTime, setLastUploadTime] = useState<number>(Date.now())
+  const [uploadSpeed, setUploadSpeed] = useState<number>(0) // bytes per second
+  const [uploadStartTime, setUploadStartTime] = useState<number>(0)
 
   useEffect(() => {
     if (JSON.stringify(items) !== JSON.stringify(pendingUploads)) {
@@ -162,26 +164,60 @@ export function ConversionQueue({
     }
   }, [currentStatus])
 
-  // Calculate upload ETA based on upload speed
+  // Calculate upload ETA based on real-time upload speed (bytes per second)
   useEffect(() => {
     if (currentStatus === "UPLOADING" && uploadProgress !== undefined && uploadProgress > 0) {
       const now = Date.now()
+
+      // Initialize upload start time on first progress update
+      if (uploadStartTime === 0) {
+        setUploadStartTime(now)
+        setLastUploadProgress(uploadProgress)
+        setLastUploadTime(now)
+        return
+      }
+
+      // Get current file being uploaded (first pending upload)
+      const currentFile = pendingUploads.find(f => f.status === "UPLOADING")
+      if (!currentFile || !currentFile.size) {
+        return
+      }
+
+      const fileSize = currentFile.size
+      const uploadedBytes = (uploadProgress / 100) * fileSize
       const progressDelta = uploadProgress - lastUploadProgress
       const timeDelta = (now - lastUploadTime) / 1000 // Convert to seconds
 
-      if (progressDelta > 0 && timeDelta > 0) {
-        // Calculate speed in percentage per second
-        const speedPerSecond = progressDelta / timeDelta
-        // Calculate remaining time
-        const remainingProgress = 100 - uploadProgress
-        const estimatedSeconds = remainingProgress / speedPerSecond
+      // Only update if we have meaningful progress (avoid noise from rapid updates)
+      if (progressDelta > 0.5 && timeDelta > 0.5) {
+        // Calculate instantaneous speed (bytes uploaded in this interval / time elapsed)
+        const bytesDelta = (progressDelta / 100) * fileSize
+        const instantSpeed = bytesDelta / timeDelta
+
+        // Use exponential moving average to smooth out speed fluctuations
+        // This prevents ETA from jumping around too much
+        const smoothingFactor = 0.3 // Lower = more smoothing
+        const smoothedSpeed = uploadSpeed === 0
+          ? instantSpeed
+          : (smoothingFactor * instantSpeed) + ((1 - smoothingFactor) * uploadSpeed)
+
+        setUploadSpeed(smoothedSpeed)
+
+        // Calculate remaining bytes and ETA
+        const remainingBytes = fileSize - uploadedBytes
+        const estimatedSeconds = smoothedSpeed > 0 ? remainingBytes / smoothedSpeed : 0
 
         setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
         setLastUploadProgress(uploadProgress)
         setLastUploadTime(now)
       }
+    } else if (currentStatus !== "UPLOADING") {
+      // Reset upload tracking when not uploading
+      setUploadStartTime(0)
+      setUploadSpeed(0)
+      setUploadEta(undefined)
     }
-  }, [uploadProgress, currentStatus])
+  }, [uploadProgress, currentStatus, pendingUploads])
 
   const isJobRunning = (file: PendingUpload) => {
     return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
@@ -197,6 +233,14 @@ export function ConversionQueue({
     const sizes = ["Bytes", "KB", "MB", "GB"]
     const i = Math.floor(Math.log(bytes) / Math.log(k))
     return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+  }
+
+  const formatUploadSpeed = (bytesPerSecond: number) => {
+    if (bytesPerSecond === 0) return "0 B/s"
+    const k = 1024
+    const sizes = ["B/s", "KB/s", "MB/s", "GB/s"]
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k))
+    return Number.parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
   }
 
   const formatTime = (seconds: number) => {
@@ -363,9 +407,18 @@ export function ConversionQueue({
 
     if (file.status === "UPLOADING" && file.upload_progress) {
       const { percentage } = file.upload_progress
+      let uploadLabel = `Uploading - ${Math.round(percentage)}%`
+
+      // Add ETA with speed in parentheses (same as global upload progress)
+      if (uploadSpeed > 0 && uploadEta) {
+        uploadLabel += ` • ${formatTime(uploadEta)} remaining (@${formatUploadSpeed(uploadSpeed)})`
+      } else if (uploadSpeed > 0) {
+        uploadLabel += ` (@${formatUploadSpeed(uploadSpeed)})`
+      }
+
       return {
         progress: Math.max(0, Math.min(100, percentage)),
-        label: `Uploading - ${Math.round(percentage)}%`,
+        label: uploadLabel,
         showProgress: true,
       }
     }
@@ -386,9 +439,28 @@ export function ConversionQueue({
     switch (currentStatus) {
       case "UPLOADING":
         const safeUploadProgress = Math.max(0, Math.min(100, uploadProgress || 0))
+
+        // Show "Preparing upload..." when progress is 0-1% (initialization phase)
+        if (safeUploadProgress <= 1 && !uploadSpeed) {
+          return {
+            progress: 0,
+            label: "Preparing upload...",
+            showProgress: true,
+          }
+        }
+
+        let uploadLabel = `Uploading - ${Math.round(safeUploadProgress)}%`
+
+        // Add ETA with speed in parentheses
+        if (uploadSpeed > 0 && uploadEta) {
+          uploadLabel += ` • ${formatTime(uploadEta)} remaining (@${formatUploadSpeed(uploadSpeed)})`
+        } else if (uploadSpeed > 0) {
+          uploadLabel += ` (@${formatUploadSpeed(uploadSpeed)})`
+        }
+
         return {
           progress: safeUploadProgress,
-          label: `Uploading - ${Math.round(safeUploadProgress)}%`,
+          label: uploadLabel,
           showProgress: true,
         }
 

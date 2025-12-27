@@ -1487,7 +1487,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileInputChange}
-                  accept=".cbz,.zip,.cbr,.rar,.pdf"
+                  accept={ALL_SUPPORTED_EXTENSIONS.join(",")}
                   multiple
                   className="hidden"
                   disabled={isConverting}

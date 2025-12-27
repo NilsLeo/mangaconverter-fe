@@ -346,19 +346,10 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    // Initialize session key on page load to avoid delays during first conversion
-    const initializeLicense = async () => {
-      try {
-        await ensureSessionKey()
-        log("Session key initialized on page load")
-      } catch (error) {
-        logWarn("Failed to initialize session key on page load:", error)
-        // Don't show error toast on page load - we'll handle it during conversion
-      }
-    }
-
+    // Session initialization now happens on first user interaction (see page.tsx)
+    // This prevents bot sessions from being created
     const initialize = async () => {
-      await Promise.all([loadPersistedJobs(), initializeLicense()])
+      await loadPersistedJobs()
       // Wait a short moment for first poll to complete (polling starts on mount)
       // The useQueuePolling hook will fetch immediately on mount
       setTimeout(() => {
@@ -423,7 +414,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           // If job is already complete, mark it as converted
           if (job.status === "COMPLETE") {
             newUpload.isConverted = true
-            newUpload.convertedName = job.filename
+            newUpload.convertedName = job.output_filename || job.filename // Use output filename if available
             newUpload.downloadId = job.job_id
             newUpload.convertedTimestamp = Date.now()
 
@@ -477,7 +468,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           if (job.status === "COMPLETE") {
             // Job completed - update with completion data
             updated.isConverted = true
-            updated.convertedName = job.filename
+            updated.convertedName = job.output_filename || job.filename // Use output filename if available
             updated.downloadId = job.job_id
             updated.convertedTimestamp = Date.now()
 
@@ -844,7 +835,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }
     }
 
-    // Session key is already initialized on page load, no need to call ensureSessionKey() here
+    // Session key will be created on first user interaction or when ensureSessionKey() is called during upload
 
     // Prevent duplicate conversion requests
     if (isConverting) {
@@ -1504,7 +1495,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileInputChange}
-                  accept=".cbz,.zip,.cbr,.rar,.pdf"
+                  accept={ALL_SUPPORTED_EXTENSIONS.join(",")}
                   multiple
                   className="hidden"
                   disabled={isConverting}
