@@ -146,11 +146,18 @@ export class MultipartUploadClient {
       // Clear upload session on success
       localStorage.removeItem(storageKey)
     } catch (error) {
-      // Abort upload on error
-      logError("[MULTIPART] Upload failed, aborting", {
-        job_id: jobId,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      // Only log as error if it's not an expected abort/cancellation
+      if (errorMessage.includes("Upload aborted") || errorMessage.includes("CANCELLED")) {
+        log("[MULTIPART] Upload cancelled by user", {
+          job_id: jobId,
+        })
+      } else {
+        logError("[MULTIPART] Upload failed, aborting", {
+          job_id: jobId,
+          error: errorMessage,
+        })
+      }
       await this.abortUpload(jobId)
 
       // Clear upload session on error
@@ -419,11 +426,20 @@ export class MultipartUploadClient {
               }
             })
             .catch((error) => {
-              logError("[MULTIPART] Part upload failed", {
-                job_id: jobId,
-                part_number: part.partNumber,
-                error: error instanceof Error ? error.message : String(error),
-              })
+              const errorMessage = error instanceof Error ? error.message : String(error)
+              // Only log as error if it's not an expected abort/cancellation
+              if (errorMessage.includes("Upload aborted") || errorMessage.includes("CANCELLED")) {
+                log("[MULTIPART] Part upload cancelled", {
+                  job_id: jobId,
+                  part_number: part.partNumber,
+                })
+              } else {
+                logError("[MULTIPART] Part upload failed", {
+                  job_id: jobId,
+                  part_number: part.partNumber,
+                  error: errorMessage,
+                })
+              }
               throw error
             })
             .finally(() => {
@@ -437,7 +453,17 @@ export class MultipartUploadClient {
       await uploadNext()
 
       if (activeTasks.size > 0) {
-        await Promise.all(activeTasks)
+        try {
+          await Promise.all(activeTasks)
+        } catch (error) {
+          // If it's an abort error, it's expected - just log and continue to finally block
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          if (errorMessage.includes("Upload aborted") || errorMessage.includes("CANCELLED")) {
+            log("[MULTIPART] Active tasks cancelled", { job_id: jobId })
+          }
+          // Re-throw so uploadFileViaMultipart can handle it
+          throw error
+        }
       }
     } finally {
       clearInterval(heartbeatInterval)
@@ -553,6 +579,11 @@ export class MultipartUploadClient {
     let lastError: Error | null = null
 
     for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
+      // Check if upload was aborted before attempting
+      if (this.aborted) {
+        throw new Error("Upload aborted")
+      }
+
       try {
         // Upload to S3 using presigned URL
         log(`[MULTIPART] Uploading part ${part.partNumber} to S3 (attempt ${attempt + 1})`, {
@@ -588,6 +619,11 @@ export class MultipartUploadClient {
         part.etag = etag
         part.uploaded = true
 
+        // Check if upload was aborted before notifying backend
+        if (this.aborted) {
+          throw new Error("Upload aborted")
+        }
+
         // Notify backend of part completion - this is critical!
         await this.notifyPartComplete(jobId, part.partNumber, etag)
 
@@ -599,11 +635,22 @@ export class MultipartUploadClient {
         return // Success!
       } catch (error) {
         lastError = error as Error
+
+        // If upload was aborted or backend rejected due to cancellation, don't retry
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        if (
+          this.aborted ||
+          errorMessage.includes("Upload aborted") ||
+          errorMessage.includes("CANCELLED status")
+        ) {
+          throw error
+        }
+
         logError(`[MULTIPART] Part ${part.partNumber} attempt ${attempt + 1} failed`, {
           job_id: jobId,
           part_number: part.partNumber,
           attempt: attempt + 1,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
         })
 
         if (attempt < this.config.retryAttempts - 1) {

@@ -715,6 +715,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     }))
 
     setPendingUploads((prev) => [...prev, ...newUploads])
+
+    // Auto-open configuration panel only if files are unconfigured (no device selected yet)
+    if (selectedProfile === "Placeholder") {
+      setSidebarOpen(true)
+    }
   }
 
   const getMinimalOptions = () => {
@@ -1051,6 +1056,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         if (
           actualErrorMessage.includes("cancelled by user") ||
           actualErrorMessage.includes("Upload cancelled") ||
+          actualErrorMessage.includes("Upload aborted") ||
           actualErrorMessage.includes("Job cancelled")
         ) {
           log("[v0] Job cancelled by user, cleaning up...")

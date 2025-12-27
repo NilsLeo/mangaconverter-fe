@@ -35,28 +35,30 @@ async function uploadFileViaMultipart(
   onProgress: (progress: number) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
 ): Promise<void> {
-  // Calculate dynamic part size to always split into 100 parts for 1-100% progress
-  // S3/R2 constraints:
-  // - Minimum part size: 5MB (except last part which can be any size)
-  // - Maximum parts: 10,000
-  // - Maximum part size: 5GB
-  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5MB (S3/R2 minimum for non-final parts)
-  const TARGET_PARTS = 100 // Always split into 100 parts for consistent 1-100% progress
+  // Calculate dynamic part size to maximize parallelism while respecting minimum part size
+  // Strategy: Use 100 parts for maximum concurrency, but ensure parts are at least 1 MB
+  // Examples:
+  // - 10 MB file: 10 parts @ 1 MB each
+  // - 150 MB file: 100 parts @ 1.5 MB each
+  // - 500 MB file: 100 parts @ 5 MB each
+  const MIN_PART_SIZE = 1 * 1024 * 1024 // 1 MB minimum per part
+  const TARGET_PARTS = 100 // Target 100 parts for maximum parallelism
 
   let partSize: number
   let numParts: number
 
   if (file.size <= MIN_PART_SIZE) {
-    // Very small files (≤5MB): single part upload
+    // Very small files (≤1MB): single part upload
     partSize = file.size
     numParts = 1
   } else if (file.size < MIN_PART_SIZE * TARGET_PARTS) {
-    // Small-medium files (<500MB): use minimum part size
-    // This will result in fewer than 100 parts, but respects S3 minimum
+    // Small-medium files (<100MB): use minimum part size
+    // This results in fewer than 100 parts (e.g., 10MB = 10 parts @ 1MB each)
     partSize = MIN_PART_SIZE
     numParts = Math.ceil(file.size / partSize)
   } else {
-    // Large files (≥500MB): split into exactly 100 parts
+    // Large files (≥100MB): split into exactly 100 parts
+    // (e.g., 150MB = 100 parts @ 1.5MB each, 500MB = 100 parts @ 5MB each)
     partSize = Math.ceil(file.size / TARGET_PARTS)
     numParts = TARGET_PARTS
   }
@@ -101,10 +103,18 @@ async function uploadFileViaMultipart(
       file_name: file.name,
     })
   } catch (error) {
-    logError(`[MULTIPART UPLOAD] Upload failed`, {
-      job_id: jobId,
-      error: error instanceof Error ? error.message : String(error),
-    })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    // Only log as error if it's not an expected abort/cancellation
+    if (errorMessage.includes("Upload aborted") || errorMessage.includes("cancelled by user")) {
+      log(`[MULTIPART UPLOAD] Upload cancelled`, {
+        job_id: jobId,
+      })
+    } else {
+      logError(`[MULTIPART UPLOAD] Upload failed`, {
+        job_id: jobId,
+        error: errorMessage,
+      })
+    }
     throw error
   } finally {
     // Cleanup
@@ -329,16 +339,17 @@ export async function uploadFileAndConvert(
       }
 
     } catch (error) {
-      // Check if it was a user cancellation
-      if (error instanceof Error && error.message.includes("cancelled by user")) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      // Check if it was a user cancellation or abort
+      if (errorMessage.includes("cancelled by user") || errorMessage.includes("Upload aborted")) {
         log("Upload cancelled by user", jobData.job_id)
         throw new Error("Upload cancelled by user")
       }
 
       logError("Multipart upload failed", jobData.job_id, {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       })
-      throw new Error(`Upload failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Upload failed: ${errorMessage}`)
     }
   } finally {
     // Always remove the file from active jobs tracking when done
