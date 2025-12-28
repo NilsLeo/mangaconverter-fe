@@ -328,7 +328,7 @@ export class MultipartUploadClient {
     }
 
     // Upload parts with automatic batch fetching
-    const totalParts = allParts.length // Will grow as we fetch more
+    // Note: totalParts will be calculated dynamically as allParts grows
     let completedParts = 0
     let uploadedBytes = 0
     const totalBytes = file.size
@@ -344,7 +344,7 @@ export class MultipartUploadClient {
             jobId: jobId,
             progress: {
               completed: completedParts,
-              total: totalParts,
+              total: allParts.length, // Dynamic total as parts are fetched
             },
           })
         )
@@ -401,7 +401,7 @@ export class MultipartUploadClient {
               if (onProgress) {
                 onProgress({
                   completedParts,
-                  totalParts,
+                  totalParts: allParts.length, // Dynamic total
                   uploadedBytes,
                   totalBytes,
                   percentage: (uploadedBytes / totalBytes) * 100,
@@ -412,7 +412,7 @@ export class MultipartUploadClient {
                 job_id: jobId,
                 part_number: part.partNumber,
                 completed: completedParts,
-                total: totalParts,
+                total: allParts.length, // Dynamic total
                 percentage: ((uploadedBytes / totalBytes) * 100).toFixed(1) + "%",
               })
 

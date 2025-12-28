@@ -311,9 +311,9 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-white/10 text-white dark:text-white border-white/20"
+              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
             >
-              READING FILE
+              Processing
             </Badge>
           )
         case "PROCESSING":
@@ -355,9 +355,9 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-white/10 text-white dark:text-white border-white/20"
+              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
             >
-              READING FILE
+              Processing
             </Badge>
           )
         case "PROCESSING":
@@ -387,6 +387,7 @@ export function ConversionQueue({
       }
     }
 
+    // Default: show "Ready" for files waiting to start
     return (
       <Badge variant="secondary" className="uppercase text-xs font-medium bg-muted">
         Ready
@@ -399,7 +400,7 @@ export function ConversionQueue({
     if (file.status === "PROCESSING" && file.processing_progress) {
       const { progress_percent, remaining_seconds } = file.processing_progress
       return {
-        progress: Math.max(0, Math.min(100, progress_percent)),
+        progress: Math.max(1, Math.min(100, progress_percent)),
         label: remaining_seconds > 0 ? `${formatTime(remaining_seconds)} remaining` : "Processing",
         showProgress: true,
       }
@@ -407,7 +408,9 @@ export function ConversionQueue({
 
     if (file.status === "UPLOADING" && file.upload_progress) {
       const { percentage } = file.upload_progress
-      let uploadLabel = `Uploading - ${Math.round(percentage)}%`
+      // Always show at least 1%
+      const safePercentage = Math.max(1, Math.min(100, percentage))
+      let uploadLabel = `Uploading - ${Math.round(safePercentage)}%`
 
       // Add ETA with speed in parentheses (same as global upload progress)
       if (uploadSpeed > 0 && uploadEta) {
@@ -417,7 +420,7 @@ export function ConversionQueue({
       }
 
       return {
-        progress: Math.max(0, Math.min(100, percentage)),
+        progress: safePercentage,
         label: uploadLabel,
         showProgress: true,
       }
@@ -425,29 +428,22 @@ export function ConversionQueue({
 
     if (file.status === "QUEUED") {
       return {
-        progress: 0,
-        label: "Reading File",
-        showProgress: false,
+        progress: 1,
+        label: "Processing - 1%",
+        showProgress: true,
       }
     }
 
     // Fallback to global status for first item when converting (backward compatibility)
     if (!isConverting || index !== 0 || currentStatus === "COMPLETE") {
+      // No progress for files that haven't started
       return null
     }
 
     switch (currentStatus) {
       case "UPLOADING":
-        const safeUploadProgress = Math.max(0, Math.min(100, uploadProgress || 0))
-
-        // Show "Preparing upload..." when progress is 0-1% (initialization phase)
-        if (safeUploadProgress <= 1 && !uploadSpeed) {
-          return {
-            progress: 0,
-            label: "Preparing upload...",
-            showProgress: true,
-          }
-        }
+        // Always show at least 1% progress
+        const safeUploadProgress = Math.max(1, Math.min(100, uploadProgress || 1))
 
         let uploadLabel = `Uploading - ${Math.round(safeUploadProgress)}%`
 
@@ -466,16 +462,16 @@ export function ConversionQueue({
 
       case "QUEUED":
         return {
-          progress: 0,
-          label: "Reading File",
-          showProgress: false,
+          progress: 1,
+          label: "Processing - 1%",
+          showProgress: true,
         }
 
       case "PROCESSING":
-        // Fallback to old logic for backward compatibility
-        const safeConversionProgress = Math.max(0, Math.min(100, conversionProgress || 0))
+        // Fallback to old logic for backward compatibility - always show at least 1%
+        const safeConversionProgress = Math.max(1, Math.min(100, conversionProgress || 1))
         const processingProgress = initialRemainingTime && dynamicRemainingTime
-          ? Math.max(0, Math.min(100, ((initialRemainingTime - dynamicRemainingTime) / initialRemainingTime) * 100))
+          ? Math.max(1, Math.min(100, ((initialRemainingTime - dynamicRemainingTime) / initialRemainingTime) * 100))
           : safeConversionProgress
         return {
           progress: processingProgress,

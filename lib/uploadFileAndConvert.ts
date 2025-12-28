@@ -37,28 +37,29 @@ async function uploadFileViaMultipart(
 ): Promise<void> {
   // Calculate dynamic part size to maximize parallelism while respecting minimum part size
   // Strategy: Use 100 parts for maximum concurrency, but ensure parts are at least 1 MB
+  // S3 requires all parts (except the last) to be at least 5MB for multipart uploads
   // Examples:
-  // - 10 MB file: 10 parts @ 1 MB each
-  // - 150 MB file: 100 parts @ 1.5 MB each
+  // - 10 MB file: 2 parts @ 5 MB each (or single upload)
+  // - 150 MB file: 30 parts @ 5 MB each
   // - 500 MB file: 100 parts @ 5 MB each
-  const MIN_PART_SIZE = 1 * 1024 * 1024 // 1 MB minimum per part
+  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5 MB minimum per part (S3 requirement)
   const TARGET_PARTS = 100 // Target 100 parts for maximum parallelism
 
   let partSize: number
   let numParts: number
 
   if (file.size <= MIN_PART_SIZE) {
-    // Very small files (≤1MB): single part upload
+    // Very small files (≤5MB): single part upload (no multipart needed)
     partSize = file.size
     numParts = 1
   } else if (file.size < MIN_PART_SIZE * TARGET_PARTS) {
-    // Small-medium files (<100MB): use minimum part size
-    // This results in fewer than 100 parts (e.g., 10MB = 10 parts @ 1MB each)
+    // Small-medium files (<500MB): use minimum part size
+    // This results in fewer than 100 parts (e.g., 150MB = 30 parts @ 5MB each)
     partSize = MIN_PART_SIZE
     numParts = Math.ceil(file.size / partSize)
   } else {
-    // Large files (≥100MB): split into exactly 100 parts
-    // (e.g., 150MB = 100 parts @ 1.5MB each, 500MB = 100 parts @ 5MB each)
+    // Large files (≥500MB): split into exactly 100 parts
+    // (e.g., 500MB = 100 parts @ 5MB each, 1GB = 100 parts @ 10MB each)
     partSize = Math.ceil(file.size / TARGET_PARTS)
     numParts = TARGET_PARTS
   }
@@ -165,6 +166,11 @@ export async function uploadFileAndConvert(
       file_key: fileKey,
       flow_step: "upload_start",
     })
+
+    // Show 1% progress immediately to indicate upload has started
+    if (onUploadProgress) {
+      onUploadProgress(1)
+    }
 
     async function createJob(currentLicenseKey: string) {
       const jobCreateStart = performance.now()
@@ -302,11 +308,6 @@ export async function uploadFileAndConvert(
       filename: file.name,
       flow_step: "upload_start",
     })
-
-    // Immediately show 1% to indicate upload has started
-    if (onUploadProgress) {
-      onUploadProgress(1)
-    }
 
     try {
       // Use multipart upload for all files
