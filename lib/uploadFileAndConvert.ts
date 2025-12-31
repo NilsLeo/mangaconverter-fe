@@ -32,7 +32,7 @@ async function uploadFileViaMultipart(
   jobId: string,
   sessionKey: string,
   fileKey: string,
-  onProgress: (progress: number) => void,
+  onProgress: (progress: number, fullProgressData?: any) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
 ): Promise<void> {
   // Calculate dynamic part size to maximize parallelism while respecting minimum part size
@@ -81,22 +81,30 @@ async function uploadFileViaMultipart(
   // Register for cancellation
   activeUploads.set(jobId, { fileKey, client })
 
+  // Track last logged percentage threshold (0, 10, 20, etc.)
+  let lastLoggedThreshold = -1
+
   try {
     await client.uploadFile(file, jobId, (progress) => {
-      // Update local progress
-      onProgress(Math.round(progress.percentage))
+      // Update local progress with full progress data for ETA calculation
+      onProgress(progress.percentage, progress)
 
       // Send progress via WebSocket
       if (sendUploadProgress) {
         sendUploadProgress(jobId, progress.uploadedBytes)
       }
 
-      log(`[MULTIPART UPLOAD] Progress update`, {
-        job_id: jobId,
-        completed_parts: progress.completedParts,
-        total_parts: progress.totalParts,
-        percentage: progress.percentage.toFixed(1),
-      })
+      // Only log every 10% increment
+      const currentThreshold = Math.floor(progress.percentage / 10)
+      if (currentThreshold !== lastLoggedThreshold) {
+        lastLoggedThreshold = currentThreshold
+        log(`[MULTIPART UPLOAD] Progress update`, {
+          job_id: jobId,
+          completed_parts: progress.completedParts,
+          total_parts: progress.totalParts,
+          percentage: progress.percentage.toFixed(1),
+        })
+      }
     })
 
     log(`[MULTIPART UPLOAD] Upload completed successfully`, {
@@ -128,7 +136,7 @@ export async function uploadFileAndConvert(
   sessionKey: string,
   deviceProfile?: string,
   advancedOptions?: Record<string, any>,
-  onUploadProgress?: (progress: number) => void,
+  onUploadProgress?: (progress: number, fullProgressData?: any) => void,
   onJobCreated?: (jobId: string) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void,
 ) {
@@ -169,7 +177,7 @@ export async function uploadFileAndConvert(
 
     // Show 1% progress immediately to indicate upload has started
     if (onUploadProgress) {
-      onUploadProgress(1)
+      onUploadProgress(1, undefined)
     }
 
     async function createJob(currentLicenseKey: string) {
@@ -289,19 +297,6 @@ export async function uploadFileAndConvert(
       logWarn("No job creation callback provided", jobData.job_id)
     }
 
-    // Check if job was cancelled immediately after creation (race condition)
-    // This handles the case where user clicks cancel between job creation and upload start
-    const statusCheckRes = await fetch(`/api/job-status/${jobData.job_id}`, {
-      headers: { "X-Session-Key": sessionKey },
-    })
-    if (statusCheckRes.ok) {
-      const statusData = await statusCheckRes.json()
-      if (statusData.status === "CANCELLED") {
-        log("Job was cancelled before upload could start, exiting early", jobData.job_id)
-        throw new Error("Upload cancelled by user")
-      }
-    }
-
     // Step 2: Upload file using multipart upload (for all files)
     log(`Starting multipart upload`, jobData.job_id, {
       file_size: file.size,
@@ -316,9 +311,9 @@ export async function uploadFileAndConvert(
         jobData.job_id,
         sessionKey,
         fileKey,
-        (progress) => {
+        (progress, fullProgressData) => {
           if (onUploadProgress) {
-            onUploadProgress(progress)
+            onUploadProgress(progress, fullProgressData)
           }
         },
         sendUploadProgress

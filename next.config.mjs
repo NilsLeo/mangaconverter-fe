@@ -22,6 +22,13 @@ const nextConfig = {
     parallelServerBuildTraces: true,
     parallelServerCompiles: true,
   },
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      // Fix for "self is not defined" error in middleware
+      config.output.globalObject = 'globalThis'
+    }
+    return config
+  },
 }
 
 mergeConfig(nextConfig, userConfig)
