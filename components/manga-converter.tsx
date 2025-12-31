@@ -44,6 +44,7 @@ export type PendingUpload = {
   outputFileSize?: number // Size of the converted file
   inputFileSize?: number // Original file size
   actualDuration?: number // Time taken for conversion
+  queuedAt?: number // Timestamp when job entered QUEUED status (for calculating download progress)
   processing_progress?: {
     elapsed_seconds: number
     remaining_seconds: number
@@ -57,6 +58,7 @@ export type PendingUpload = {
     total_bytes: number
     percentage: number
   }
+  worker_download_speed_mbps?: number // Worker download speed for simulating Reading File stage
 }
 
 export type AdvancedOptionsType = {
@@ -109,11 +111,15 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [isConverting, setIsConverting] = useState(false)
   const [convertedFiles, setConvertedFiles] = useState<ConvertedFileInfo[]>([])
   const [uploadProgress, setUploadProgress] = useState<number>(0)
+  const [uploadProgressConfirmed, setUploadProgressConfirmed] = useState<number>(0)
   const [conversionProgress, setConversionProgress] = useState<number>(0)
   const [isUploaded, setIsUploaded] = useState<boolean>(false)
   const [eta, setEta] = useState<number | undefined>(undefined)
   const [remainingTime, setRemainingTime] = useState<number | undefined>(undefined)
   const [currentStatus, setCurrentStatus] = useState<string | undefined>(undefined)
+
+  // Track last logged progress percent for logging changes
+  const lastLoggedProgressRef = useRef<number>(-1)
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [downloadsOpen, setDownloadsOpen] = useState(false)
@@ -386,6 +392,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             return prev
           }
 
+          // Skip dismissed jobs - they've been removed by user action
+          if (isDismissedJob(job.job_id)) {
+            return prev
+          }
+
           // Skip cancelled jobs - they've been removed by user action
           if (job.status === "CANCELLED") {
             return prev
@@ -393,7 +404,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
           // Skip uploading jobs - they're from interrupted uploads in previous sessions
           if (job.status === "UPLOADING") {
-            log(`[QUEUE POLL] Skipping UPLOADING job ${job.job_id} - likely interrupted upload`)
             return prev
           }
 
@@ -409,6 +419,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             deviceProfile: job.device_profile,
             processing_progress: job.processing_progress,
             upload_progress: job.upload_progress,
+            worker_download_speed_mbps: job.worker_download_speed_mbps,
           }
 
           // If job is already complete, mark it as converted
@@ -462,6 +473,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             status: job.status,
             processing_progress: job.processing_progress,
             upload_progress: job.upload_progress,
+            worker_download_speed_mbps: job.worker_download_speed_mbps,
+            // Set queuedAt timestamp when job first enters QUEUED status
+            queuedAt: job.status === 'QUEUED' && f.status !== 'QUEUED' ? Date.now() : f.queuedAt,
           }
 
           // Handle completion
@@ -625,10 +639,19 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
   const handleDismissJob = async (file: PendingUpload) => {
     if (file.jobId) {
-      // Mark job as being dismissed (show spinner)
+      // Immediately remove job from UI (don't wait for backend)
+      setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
+
+      // Track dismissal to prevent re-adding from polling
+      addToDismissedJobs(file.jobId)
+
+      // Remove from localStorage
+      removeJobFromStorage(file.jobId, true)
+
+      // Mark job as being dismissed (show spinner - but job already removed from list)
       setDismissingJobs((prev) => new Set(prev).add(file.jobId!))
 
-      // Always call backend to set dismissed_at timestamp (for all job statuses)
+      // Call backend to set dismissed_at timestamp (for all job statuses)
       try {
         const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
         const sessionKey = await ensureSessionKey()
@@ -669,15 +692,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           return newSet
         })
       }
-
-      // Remove from localStorage
-      removeJobFromStorage(file.jobId, true)
-
-      // Track dismissal temporarily to prevent re-adding during transition
-      addToDismissedJobs(file.jobId)
     }
-    // Job will be removed from UI automatically by next polling cycle
-    // (backend filters dismissed jobs from /api/queue/status response)
+    // Job already removed from UI immediately (don't wait for backend/polling)
   }
 
   // Polling-based job monitoring (WebSocket replaced with polling)
@@ -854,6 +870,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
     // Reset all progress states at the start of conversion
     setUploadProgress(0)
+    setUploadProgressConfirmed(0)
     setConversionProgress(0)
     setIsUploaded(false)
     setEta(undefined)
@@ -884,11 +901,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
         // Reset progress states for this file
         setUploadProgress(0)
+        setUploadProgressConfirmed(0)
         setIsUploaded(false)
         setConversionProgress(0)
         setEta(undefined)
         setRemainingTime(undefined)
         setCurrentStatus(undefined) // Will be set by first status poll
+        lastLoggedProgressRef.current = -1 // Reset progress logging
 
         let conversionComplete = false
         let errorMessage = null
@@ -937,6 +956,10 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           }
         }
 
+        // Set initial upload state immediately (prevents "ready" flash before upload starts)
+        setUploadProgress(1)
+        setCurrentStatus("UPLOADING")
+
         // Start upload and conversion process with immediate status polling
         let uploadPromise
         try {
@@ -946,8 +969,46 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             fileDeviceProfile, // Use per-file device profile
             convertAdvancedOptionsToBackend(fileAdvancedOptions), // Use per-file advanced options
             // Upload progress callback for real-time UI updates
-            (progress) => {
+            (progress, fullProgressData) => {
               setUploadProgress(progress)
+
+              // Calculate confirmed progress (only backend-confirmed parts)
+              if (fullProgressData) {
+                const confirmedProgress = (fullProgressData.completedParts / fullProgressData.totalParts) * 100
+                setUploadProgressConfirmed(confirmedProgress)
+              }
+
+              // Log whenever a new full percent is rendered
+              const currentPercent = Math.floor(progress)
+              if (currentPercent !== lastLoggedProgressRef.current && currentPercent >= 0 && currentPercent <= 100) {
+                lastLoggedProgressRef.current = currentPercent
+                log(`[UI] Progress bar updated: ${currentPercent}%`, {
+                  progress_percent: currentPercent,
+                  raw_progress: progress.toFixed(2),
+                  completed_parts: fullProgressData?.completedParts,
+                  total_parts: fullProgressData?.totalParts,
+                  uploaded_bytes: fullProgressData?.uploadedBytes,
+                  total_bytes: fullProgressData?.totalBytes
+                })
+              }
+
+              // Update per-file upload progress for UI display with full data for ETA calculation
+              setPendingUploads((prev) =>
+                prev.map((f) =>
+                  f === currentFile
+                    ? {
+                        ...f,
+                        upload_progress: fullProgressData || {
+                          completed_parts: 0,
+                          total_parts: 0,
+                          uploaded_bytes: 0,
+                          total_bytes: currentFile.size,
+                          percentage: progress,
+                        },
+                      }
+                    : f,
+                ),
+              )
 
               // Mark as uploaded when progress reaches 100%
               if (progress >= 100) {
@@ -962,7 +1023,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
               saveJobToStorage(jobId, currentFile.name, currentFile.size, "UPLOADING")
               setPendingUploads((prev) =>
-                prev.map((f) => (f === currentFile ? { ...f, jobId, status: "UPLOADING", isMonitoring: true } : f)),
+                prev.map((f) => (f.name === currentFile.name && f.size === currentFile.size && !f.jobId ? { ...f, jobId, status: "UPLOADING", isMonitoring: true } : f)),
               )
 
               log("Job created - polling will track progress", jobId, {
@@ -1044,6 +1105,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
         // Reset progress states for next file
         setUploadProgress(0)
+        setUploadProgressConfirmed(0)
         setConversionProgress(0)
         setIsUploaded(false)
         setEta(undefined)
@@ -1097,6 +1159,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
     // Reset all progress states when conversion is complete
     setUploadProgress(0)
+    setUploadProgressConfirmed(0)
     setConversionProgress(0)
     setIsUploaded(false)
     setEta(undefined)
@@ -1151,13 +1214,25 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     if (wasActiveJob) {
       setIsConverting(false)
       setUploadProgress(0)
+      setUploadProgressConfirmed(0)
       setConversionProgress(0)
       setEta(undefined)
       setRemainingTime(undefined)
       setCurrentStatus(undefined)
     }
 
-    // Backend cancellation with timeout
+    // IMMEDIATELY remove from UI - don't wait for backend response
+    removeJobFromStorage(file.jobId)
+    addToDismissedJobs(file.jobId)
+
+    // Remove from pendingUploads immediately
+    setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
+
+    // Show immediate feedback
+    toast.success(`Cancelled ${file.name}`)
+
+    // Backend cancellation in background (fire and forget)
+    // We don't wait for this - user sees immediate cancellation
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
@@ -1177,37 +1252,16 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
       const data = await response.json()
 
-      log("Job cancellation confirmed by backend - will be filtered from next poll", file.jobId, {
+      log("Job cancellation confirmed by backend", file.jobId, {
         filename: file.name,
         new_status: data.status,
       })
-
-      // Remove from localStorage
-      removeJobFromStorage(file.jobId)
-
-      // Track dismissal temporarily to prevent re-adding during transition
-      addToDismissedJobs(file.jobId)
-
-      toast.success(`Cancelled ${file.name}`)
     } catch (error) {
-      // Handle timeout/abort
+      // Log backend errors but don't show to user (job already removed from UI)
       if (error instanceof Error && error.name === 'AbortError') {
-        logError("[v0] Backend cancel timed out, removing job from UI anyway", file.jobId)
-
-        // Remove from localStorage
-        removeJobFromStorage(file.jobId)
-
-        // Track dismissal to prevent re-adding
-        addToDismissedJobs(file.jobId)
-
-        toast.warning(`Cancelled ${file.name} (backend timeout)`)
+        logWarn("[v0] Backend cancel timed out (job already removed from UI)", file.jobId)
       } else {
-        logError("[v0] Backend cancel failed:", error)
-        logError("Job cancellation failed in backend", file.jobId, {
-          error: error instanceof Error ? error.message : String(error),
-          filename: file.name,
-        })
-        toast.error(`Failed to cancel ${file.name}`)
+        logError("[v0] Backend cancel failed (job already removed from UI):", error)
       }
     } finally {
       // Remove from cancelling state
@@ -1485,6 +1539,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   dismissingJobs={dismissingJobs}
                   cancellingJobs={cancellingJobs}
                   uploadProgress={uploadProgress}
+                  uploadProgressConfirmed={uploadProgressConfirmed}
                   conversionProgress={conversionProgress}
                   isUploaded={isUploaded}
                   eta={eta}

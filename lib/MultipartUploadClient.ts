@@ -333,6 +333,10 @@ export class MultipartUploadClient {
     let uploadedBytes = 0
     const totalBytes = file.size
 
+    // Track in-progress bytes for real-time progress updates
+    const partProgressBytes = new Map<number, number>() // partNumber -> bytes uploaded so far
+    let lastReportedProgress = 0 // Track last reported percentage to prevent backwards movement
+
     const storageKey = `multipart_upload_${jobId}`
     const heartbeatInterval = setInterval(() => {
       if (!this.aborted) {
@@ -354,6 +358,35 @@ export class MultipartUploadClient {
     try {
       const activeTasks = new Set<Promise<void>>()
       let partIndex = 0
+
+      // Helper to calculate total progress including in-progress parts
+      const calculateTotalProgress = () => {
+        let inProgressBytes = 0
+        for (const bytes of partProgressBytes.values()) {
+          inProgressBytes += bytes
+        }
+        return uploadedBytes + inProgressBytes
+      }
+
+      // Helper to trigger progress callback (ensures progress never goes backwards)
+      const updateProgress = () => {
+        if (onProgress) {
+          const totalUploadedBytes = calculateTotalProgress()
+          const currentProgress = (totalUploadedBytes / totalBytes) * 100
+
+          // Only update if progress moves forward (or stays the same)
+          if (currentProgress >= lastReportedProgress) {
+            lastReportedProgress = currentProgress
+            onProgress({
+              completedParts,
+              totalParts: allParts.length, // Dynamic total
+              uploadedBytes: totalUploadedBytes,
+              totalBytes,
+              percentage: currentProgress,
+            })
+          }
+        }
+      }
 
       const uploadNext = async () => {
         while (true) {
@@ -393,20 +426,33 @@ export class MultipartUploadClient {
 
           const part = allParts[partIndex++]
 
-          const uploadTask = this.uploadPart(jobId, part)
+          // Progress callback for this specific part
+          const partProgressCallback = (partBytes: number) => {
+            partProgressBytes.set(part.partNumber, partBytes)
+            updateProgress()
+          }
+
+          const uploadTask = this.uploadPart(jobId, part, partProgressCallback)
             .then(() => {
               completedParts++
+
+              // CRITICAL: When a part completes, we need to account for the fact that
+              // it was already being tracked in partProgressBytes. We remove it from
+              // in-progress tracking and add the FULL size to uploadedBytes.
+              // The calculation in calculateTotalProgress() is:
+              //   uploadedBytes (completed parts) + sum(partProgressBytes) (in-progress parts)
+              // So when we move a part from in-progress to completed:
+              //   - partProgressBytes loses the partial bytes (e.g., 8MB out of 10MB)
+              //   - uploadedBytes gains the full part size (10MB)
+              // This can cause a dip if the part was close to completion.
+              // Solution: Remove BEFORE adding to maintain monotonic progress
+              const wasInProgress = partProgressBytes.has(part.partNumber)
+              const inProgressBytes = wasInProgress ? partProgressBytes.get(part.partNumber)! : 0
+
+              partProgressBytes.delete(part.partNumber)
               uploadedBytes += part.blob.size
 
-              if (onProgress) {
-                onProgress({
-                  completedParts,
-                  totalParts: allParts.length, // Dynamic total
-                  uploadedBytes,
-                  totalBytes,
-                  percentage: (uploadedBytes / totalBytes) * 100,
-                })
-              }
+              updateProgress()
 
               log("[MULTIPART] Part completed and confirmed by backend", {
                 job_id: jobId,
@@ -427,6 +473,11 @@ export class MultipartUploadClient {
             })
             .catch((error) => {
               const errorMessage = error instanceof Error ? error.message : String(error)
+
+              // Clean up progress tracking for failed part
+              partProgressBytes.delete(part.partNumber)
+              updateProgress()
+
               // Only log as error if it's not an expected abort/cancellation
               if (errorMessage.includes("Upload aborted") || errorMessage.includes("CANCELLED")) {
                 log("[MULTIPART] Part upload cancelled", {
@@ -573,9 +624,13 @@ export class MultipartUploadClient {
   }
 
   /**
-   * Upload a single part with retry logic
+   * Upload a single part with retry logic and real-time progress tracking
    */
-  private async uploadPart(jobId: string, part: UploadPart): Promise<void> {
+  private async uploadPart(
+    jobId: string,
+    part: UploadPart,
+    onPartProgress?: (bytesUploaded: number) => void
+  ): Promise<void> {
     let lastError: Error | null = null
 
     for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
@@ -584,31 +639,86 @@ export class MultipartUploadClient {
         throw new Error("Upload aborted")
       }
 
+      // Reset part progress to 0 before each attempt (including retries)
+      // This prevents failed attempts from inflating the total progress
+      if (onPartProgress) {
+        onPartProgress(0)
+      }
+
       try {
-        // Upload to S3 using presigned URL
+        // Upload to S3 using presigned URL with XMLHttpRequest for progress tracking
         log(`[MULTIPART] Uploading part ${part.partNumber} to S3 (attempt ${attempt + 1})`, {
           job_id: jobId,
           part_number: part.partNumber,
           part_size: part.blob.size,
         })
 
-        const uploadResponse = await fetch(part.url, {
-          method: "PUT",
-          body: part.blob,
-          headers: {
-            "Content-Type": "application/octet-stream",
-          },
+        // Use XMLHttpRequest instead of fetch() to get upload progress events
+        const etag = await new Promise<string>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+
+          // Set timeout to prevent stuck uploads (Hetzner S3 timeout is ~60-80s)
+          // We set it to 60s to fail faster and retry with fresh connection
+          xhr.timeout = 60000  // 60 seconds
+
+          let lastProgressTime = Date.now()
+          let lastProgressBytes = 0
+
+          // Track upload progress
+          xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable && onPartProgress) {
+              // Report bytes uploaded for this part
+              onPartProgress(e.loaded)
+
+              // Track progress for stall detection
+              lastProgressTime = Date.now()
+              lastProgressBytes = e.loaded
+            }
+          })
+
+          // Handle completion
+          xhr.addEventListener("load", () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              // Get ETag from response headers
+              const etag = xhr.getResponseHeader("ETag")
+              if (!etag) {
+                reject(new Error("No ETag in S3 response"))
+              } else {
+                resolve(etag)
+              }
+            } else {
+              reject(new Error(`S3 upload failed: ${xhr.status}`))
+            }
+          })
+
+          // Handle timeout
+          xhr.addEventListener("timeout", () => {
+            reject(new Error("Upload timeout after 60s - will retry with fresh connection"))
+          })
+
+          // Handle errors
+          xhr.addEventListener("error", () => {
+            reject(new Error("Network error during S3 upload"))
+          })
+
+          xhr.addEventListener("abort", () => {
+            reject(new Error("Upload aborted"))
+          })
+
+          // Check for abort before starting
+          if (this.aborted) {
+            reject(new Error("Upload aborted"))
+            return
+          }
+
+          // Start upload
+          xhr.open("PUT", part.url)
+          xhr.setRequestHeader("Content-Type", "application/octet-stream")
+          xhr.send(part.blob)
+
+          // Store xhr for potential abort
+          ;(part as any).xhr = xhr
         })
-
-        if (!uploadResponse.ok) {
-          throw new Error(`S3 upload failed: ${uploadResponse.status}`)
-        }
-
-        // Get ETag from response headers
-        const etag = uploadResponse.headers.get("ETag")
-        if (!etag) {
-          throw new Error("No ETag in S3 response")
-        }
 
         log(`[MULTIPART] Part ${part.partNumber} uploaded to S3, notifying backend`, {
           job_id: jobId,
@@ -618,6 +728,12 @@ export class MultipartUploadClient {
 
         part.etag = etag
         part.uploaded = true
+
+        // Part fully uploaded to S3 - report completion immediately
+        // This ensures progress reflects actual upload, not backend confirmation
+        if (onPartProgress) {
+          onPartProgress(part.blob.size)
+        }
 
         // Check if upload was aborted before notifying backend
         if (this.aborted) {
@@ -660,7 +776,11 @@ export class MultipartUploadClient {
       }
     }
 
-    // All retries failed
+    // All retries failed - clean up progress tracking for this part
+    if (onPartProgress) {
+      onPartProgress(0)
+    }
+
     throw new Error(
       `Part ${part.partNumber} failed after ${this.config.retryAttempts} attempts: ${lastError?.message}`
     )

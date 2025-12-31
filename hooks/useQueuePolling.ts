@@ -10,6 +10,7 @@ export interface QueueJob {
   device_profile: string
   file_size: number
   output_file_size?: number // output file size (only present for COMPLETE jobs)
+  worker_download_speed_mbps?: number // Worker download speed in Mbps (only present for QUEUED jobs)
   upload_progress?: {
     completed_parts: number
     total_parts: number
@@ -35,14 +36,14 @@ export interface QueueStatus {
 /**
  * Hook to poll backend for queue status
  *
- * Replaces WebSocket with simple HTTP polling every 1-2 seconds
+ * Replaces WebSocket with simple HTTP polling every 7.5 seconds
  * Backend returns complete job state for all active jobs
  *
- * @param interval - Polling interval in milliseconds (default: from env or 1500ms)
+ * @param interval - Polling interval in milliseconds (default: from env or 7500ms)
  * @param enabled - Whether polling is enabled (default: true)
  */
 export function useQueuePolling(
-  interval = Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 1500,
+  interval = Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 7500,
   enabled = true
 ) {
   const { isLoading: sessionLoading } = useSessionManager()
