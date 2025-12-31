@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { io, Socket } from 'socket.io-client'
 import { getSessionKey, removeSessionKey, ensureSession } from '@/lib/session'
 import { useSession as useSessionManager } from './use-session'
 
@@ -34,177 +35,214 @@ export interface QueueStatus {
 }
 
 /**
- * Hook to poll backend for queue status
+ * Hook to receive queue status updates via WebSocket
  *
- * Replaces WebSocket with simple HTTP polling every 7.5 seconds
- * Backend returns complete job state for all active jobs
+ * Replaces HTTP polling with WebSocket push notifications
+ * Backend broadcasts complete job state for session whenever any job updates
+ * Falls back to polling if WebSocket connection fails
  *
- * @param interval - Polling interval in milliseconds (default: from env or 7500ms)
- * @param enabled - Whether polling is enabled (default: true)
+ * @param interval - Fallback polling interval in milliseconds (default: 30000ms)
+ * @param enabled - Whether updates are enabled (default: true)
  */
 export function useQueuePolling(
-  interval = Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 7500,
+  interval = 30000, // Fallback polling interval (30s, was 7.5s)
   enabled = true
 ) {
   const { isLoading: sessionLoading } = useSessionManager()
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [isPolling, setIsPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const [transportMode, setTransportMode] = useState<'websocket' | 'polling' | 'connecting'>('connecting')
+
+  const socketRef = useRef<Socket | null>(null)
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const lastFetchRef = useRef<number>(0)
-  const abortControllerRef = useRef<AbortController | null>(null)
-  const inFlightRef = useRef<boolean>(false)
+  const reconnectAttemptsRef = useRef<number>(0)
 
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
+
+  // Fallback polling function (only used if WebSocket fails)
   const fetchQueueStatus = useCallback(async () => {
-    if (!enabled) return
+    if (!enabled || transportMode === 'websocket') return
 
-    // Skip if a request is already in flight
-    if (inFlightRef.current) {
-      return
-    }
-
-    // Debounce: don't fetch if we just fetched less than 500ms ago
     const now = Date.now()
-    if (now - lastFetchRef.current < 500) {
-      return
-    }
+    if (now - lastFetchRef.current < 500) return
     lastFetchRef.current = now
-
-    // Abort any previous in-flight request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-
-    // Create new abort controller for this request
-    abortControllerRef.current = new AbortController()
-    inFlightRef.current = true
 
     try {
       setIsPolling(true)
       setError(null)
 
-      // Only poll if a session already exists - don't create one
-      // This prevents bot sessions from being created just for polling
       const sessionKey = getSessionKey()
-      if (!sessionKey) {
-        // No session yet - skip polling silently
-        // Session will be created on first user interaction
-        return
-      }
+      if (!sessionKey) return
 
-      console.log('[useQueuePolling] Fetching with session key:', sessionKey?.substring(0, 8) + '...')
+      console.log('[POLLING FALLBACK] Fetching with session key:', sessionKey?.substring(0, 8) + '...')
 
-      const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
       const response = await fetch(`${API_BASE_URL}/api/queue/status`, {
         method: 'GET',
         headers: {
           'X-Session-Key': sessionKey,
           'Content-Type': 'application/json',
         },
-        signal: abortControllerRef.current.signal,
       })
 
-      console.log('[useQueuePolling] Response status:', response.status, response.statusText)
-
       if (!response.ok) {
-        const errorText = await response.text()
-        console.error('[useQueuePolling] Error response:', errorText)
-
-        // If we get a 401, the session is invalid - clear it and create a new one
         if (response.status === 401) {
-          console.warn('[useQueuePolling] 401 Unauthorized - session expired or abandoned')
+          console.warn('[POLLING FALLBACK] 401 Unauthorized - session expired')
           removeSessionKey()
-
-          try {
-            // Create a new session automatically
-            console.log('[useQueuePolling] Creating new session after 401...')
-            const newSession = await ensureSession()
-            console.log('[useQueuePolling] New session created:', newSession?.substring(0, 8) + '...')
-
-            // Session is now available for next poll
-            return
-          } catch (sessionError) {
-            console.error('[useQueuePolling] Failed to create new session:', sessionError)
-            throw new Error('Session expired and could not create new session.')
-          }
+          await ensureSession()
+          return
         }
-
         throw new Error(`Failed to fetch queue status: ${response.statusText}`)
       }
 
       const data: QueueStatus = await response.json()
-      console.log(`[QUEUE POLLING] Fetched status: ${data.jobs.length} jobs`)
+      console.log(`[POLLING FALLBACK] Fetched status: ${data.jobs.length} jobs`)
       setQueueStatus(data)
     } catch (err) {
-      // Ignore abort errors (these are intentional)
-      if (err instanceof Error && err.name === 'AbortError') {
+      if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+        // Silently ignore network errors
         return
       }
-
-      // Ignore network errors caused by page navigation/unload (e.g., during downloads)
-      // These are expected when user clicks download and browser navigates to the file URL
-      const isNavigationError =
-        err instanceof TypeError &&
-        (err.message.includes('NetworkError') ||
-         err.message.includes('Failed to fetch') ||
-         err.message.includes('The user aborted a request'))
-
-      if (!isNavigationError) {
-        console.error('[QUEUE POLLING] Error fetching queue status:', err)
-        setError(err instanceof Error ? err.message : 'Unknown error')
-      }
-      // Silently ignore navigation-related errors
+      console.error('[POLLING FALLBACK] Error:', err)
+      setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setIsPolling(false)
-      inFlightRef.current = false
     }
-  }, [enabled])
+  }, [enabled, transportMode, API_BASE_URL])
 
-  // Set up polling interval
+  // WebSocket connection management
   useEffect(() => {
     if (!enabled || sessionLoading) {
-      // Clear interval if disabled or session is still loading
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
+      return
+    }
+
+    const sessionKey = getSessionKey()
+    if (!sessionKey) {
+      console.log('[WEBSOCKET] No session key, skipping connection')
+      return
+    }
+
+    console.log('[WEBSOCKET] Connecting to', API_BASE_URL)
+    setTransportMode('connecting')
+
+    // Create Socket.IO connection
+    const socket = io(API_BASE_URL, {
+      transports: ['websocket'], // WebSocket only (no long-polling fallback)
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 5,
+      timeout: 10000,
+      auth: {
+        session_key: sessionKey
+      }
+    })
+
+    socketRef.current = socket
+
+    // Connection established
+    socket.on('connect', () => {
+      console.log('[WEBSOCKET] Connected with socket ID:', socket.id)
+      setTransportMode('websocket')
+      setError(null)
+      reconnectAttemptsRef.current = 0
+
+      // Subscribe to session updates
+      console.log('[WEBSOCKET] Subscribing to session:', sessionKey.substring(0, 8) + '...')
+      socket.emit('subscribe_session', { session_key: sessionKey })
+    })
+
+    // Receive session updates
+    socket.on('session_update', (data: QueueStatus) => {
+      console.log(`[WEBSOCKET] Received session update: ${data.jobs?.length || 0} jobs`)
+      setQueueStatus(data)
+      setIsPolling(false) // Update received, not polling anymore
+    })
+
+    // Connection errors
+    socket.on('connect_error', (err) => {
+      reconnectAttemptsRef.current++
+      console.error('[WEBSOCKET] Connection error:', err.message, `(attempt ${reconnectAttemptsRef.current})`)
+
+      // After 3 failed attempts, fall back to polling
+      if (reconnectAttemptsRef.current >= 3) {
+        console.warn('[WEBSOCKET] Too many failed attempts, falling back to polling')
+        setTransportMode('polling')
+        setError('WebSocket connection failed, using polling fallback')
+      }
+    })
+
+    // Disconnected
+    socket.on('disconnect', (reason) => {
+      console.warn('[WEBSOCKET] Disconnected:', reason)
+
+      // If server disconnected us, fall back to polling
+      if (reason === 'io server disconnect' || reason === 'transport close') {
+        setTransportMode('polling')
+      }
+    })
+
+    // Error from server
+    socket.on('error', (errorData: any) => {
+      console.error('[WEBSOCKET] Server error:', errorData)
+      setError(errorData.message || 'WebSocket error')
+    })
+
+    // Cleanup
+    return () => {
+      console.log('[WEBSOCKET] Disconnecting')
+      socket.disconnect()
+      socketRef.current = null
+    }
+  }, [enabled, sessionLoading, API_BASE_URL])
+
+  // Fallback polling (only active if WebSocket fails)
+  useEffect(() => {
+    if (!enabled || sessionLoading || transportMode !== 'polling') {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
       }
       return
     }
 
-    // Initial fetch (only after session is ready)
+    console.log('[POLLING FALLBACK] Starting polling interval:', interval, 'ms')
+
+    // Initial fetch
     fetchQueueStatus()
 
     // Set up interval
-    intervalRef.current = setInterval(fetchQueueStatus, interval)
-
-    // Stop polling when page is being unloaded (e.g., during downloads)
-    const handleBeforeUnload = () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
-      }
-    }
-
-    window.addEventListener('beforeunload', handleBeforeUnload)
+    pollingIntervalRef.current = setInterval(fetchQueueStatus, interval)
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
       }
-      window.removeEventListener('beforeunload', handleBeforeUnload)
     }
-  }, [fetchQueueStatus, interval, enabled, sessionLoading])
+  }, [fetchQueueStatus, interval, enabled, sessionLoading, transportMode])
 
   // Manual refresh function
   const refresh = useCallback(() => {
-    fetchQueueStatus()
-  }, [fetchQueueStatus])
+    if (transportMode === 'websocket' && socketRef.current?.connected) {
+      // Request immediate update via WebSocket
+      const sessionKey = getSessionKey()
+      if (sessionKey) {
+        console.log('[WEBSOCKET] Requesting manual refresh')
+        socketRef.current.emit('request_session_status', { session_key: sessionKey })
+      }
+    } else {
+      // Fall back to polling
+      fetchQueueStatus()
+    }
+  }, [transportMode, fetchQueueStatus])
 
   return {
     queueStatus,
-    isPolling,
+    isPolling: isPolling || transportMode === 'connecting',
     error,
     refresh,
+    transportMode, // Expose transport mode for debugging
   }
 }
