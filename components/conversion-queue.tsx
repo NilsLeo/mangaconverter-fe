@@ -6,13 +6,14 @@ import { Loader2, FileText, AlertTriangle, X, Download, XCircle, Settings, Uploa
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { motion } from "framer-motion"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import type { PendingUpload, AdvancedOptionsType } from "./manga-converter"
 import { fetchWithLicense } from "@/lib/utils"
 import { log, logError, logWarn, logDebug } from "@/lib/logger"
 import { toast } from "sonner"
 
 const DOWNLOAD_SPEED_MBITS_WORKER = parseFloat(process.env.NEXT_PUBLIC_DOWNLOAD_SPEED_MBITS_WORKER || "250")
+const QUEUED_SECONDS = parseInt(process.env.NEXT_PUBLIC_QUEUED_SECONDS || "5", 10)
 
 interface ConversionQueueProps {
   pendingUploads: PendingUpload[]
@@ -71,15 +72,37 @@ export function ConversionQueue({
 }: ConversionQueueProps) {
   const [items, setItems] = useState(pendingUploads)
   const [downloadingFiles, setDownloadingFiles] = useState<Record<string, boolean>>({})
-  const [dynamicEta, setDynamicEta] = useState<number | undefined>(eta)
-  const [dynamicRemainingTime, setDynamicRemainingTime] = useState<number | undefined>(remainingTime)
-  const [initialRemainingTime, setInitialRemainingTime] = useState<number | undefined>(undefined)
+  // PROCESSING ETA comes from backend; no local countdown
   const [uploadEta, setUploadEta] = useState<number | undefined>(undefined)
+  const [displayedUploadRemainingSec, setDisplayedUploadRemainingSec] = useState<number | null>(null)
   const [lastUploadProgress, setLastUploadProgress] = useState<number>(0)
   const [lastUploadTime, setLastUploadTime] = useState<number>(Date.now())
   const [uploadSpeed, setUploadSpeed] = useState<number>(0) // bytes per second
   const [uploadStartTime, setUploadStartTime] = useState<number>(0)
   const [lastEtaUpdateTime, setLastEtaUpdateTime] = useState<number>(0)
+  const uploadJobIdRef = useRef<string>('unknown')
+  const lastLoggedUploadRemainingRef = useRef<number | null>(null)
+
+  // Client-side PROCESSING ticker (based on backend-provided ETA at start)
+  const [processingStartTime, setProcessingStartTime] = useState<number | null>(null)
+  const [processingEtaSec, setProcessingEtaSec] = useState<number | null>(null)
+  const [clientProcessingProgress, setClientProcessingProgress] = useState<number>(0)
+  const [displayedRemainingSec, setDisplayedRemainingSec] = useState<number | null>(null)
+  // Logging refs for 10% progress steps and ETA second decrements
+  const lastLoggedProcessingTenthRef = useRef<number | null>(null)
+  const lastLoggedRemainingSecRef = useRef<number | null>(null)
+  const processingJobIdRef = useRef<string>('unknown')
+  // QUEUED progressive ticker state
+  const [queuedStartTime, setQueuedStartTime] = useState<number | null>(null)
+  const [queuedDurationSec, setQueuedDurationSec] = useState<number>(QUEUED_SECONDS)
+  const [clientQueuedProgress, setClientQueuedProgress] = useState<number>(0)
+  const [displayedQueuedRemainingSec, setDisplayedQueuedRemainingSec] = useState<number | null>(null)
+  const queuedJobIdRef = useRef<string>('unknown')
+  const lastLoggedQueuedTenthRef = useRef<number | null>(null)
+  const lastLoggedQueuedRemainingRef = useRef<number | null>(null)
+
+  // Refs to track last logged progress percentage for each job stage (to log only at 10% intervals)
+  // No queued/progress logs: handled by backend
 
   useEffect(() => {
     if (JSON.stringify(items) !== JSON.stringify(pendingUploads)) {
@@ -87,91 +110,199 @@ export function ConversionQueue({
     }
   }, [pendingUploads])
 
-  // Update dynamic ETA when prop changes OR initialize from file data when entering QUEUED
+  // No QUEUED ETA: we intentionally do not compute or display ETA while QUEUED
+
+  // No local remaining time state; rely on backend
+
+  // No QUEUED countdown: progress remains at 0% until PROCESSING
+
+  // No PROCESSING countdown; backend provides remaining_seconds
+
+  // Initialize client-side PROCESSING tickers when backend ETA is available
   useEffect(() => {
-    if (currentStatus === "QUEUED") {
-      // Only capture the INITIAL value when first entering QUEUED
-      if (!dynamicEta) {
-        // If backend provided eta, use it
-        if (eta !== undefined) {
-          setDynamicEta(eta)
+    const processingFile = pendingUploads.find(f => f.status === "PROCESSING" && f.processing_progress)
+    const pp = processingFile?.processing_progress
+    if (pp?.projected_eta && pp.projected_eta > 0) {
+        const baseElapsed = pp.elapsed_seconds ?? 0
+        const startMs = Date.now() - baseElapsed * 1000
+        setProcessingStartTime(startMs)
+        setProcessingEtaSec(pp.projected_eta)
+        // Start from backend-progress if provided
+        const initialProgress = pp.progress_percent != null
+          ? Math.floor(Math.max(0, Math.min(99, pp.progress_percent)))
+          : Math.floor(Math.max(0, Math.min(99, (baseElapsed / pp.projected_eta) * 100)))
+        setClientProcessingProgress(initialProgress)
+        const initialRemaining = pp.remaining_seconds != null
+          ? pp.remaining_seconds
+          : Math.max(0, Math.ceil(pp.projected_eta - baseElapsed))
+        setDisplayedRemainingSec(initialRemaining)
+        // Track job id for logging
+        const jId = (processingFile as any)?.jobId || (processingFile as any)?.job_id
+        if (jId) {
+          processingJobIdRef.current = jId
         } else {
-          // Calculate ETA based on file size and worker download speed
-          const firstQueuedFile = pendingUploads.find(f => f.status === "QUEUED")
-          if (firstQueuedFile) {
-            const downloadSpeedMbps = firstQueuedFile.worker_download_speed_mbps || DOWNLOAD_SPEED_MBITS_WORKER
-            const downloadSpeedBytes = (downloadSpeedMbps * 1024 * 1024) / 8 // Convert Mbps to bytes/s
-            const estimatedDownloadTime = Math.ceil(firstQueuedFile.size / downloadSpeedBytes)
-            setDynamicEta(estimatedDownloadTime)
-            console.log(`[QUEUED] Initialized download ETA: ${estimatedDownloadTime}s for file size ${firstQueuedFile.size} bytes at ${downloadSpeedMbps} Mbps`)
-          }
+          processingJobIdRef.current = 'unknown'
         }
-      }
-      // After initial set, ignore all backend updates and let countdown handle it
+        // Reset logging refs when (re)initializing ticker
+        lastLoggedProcessingTenthRef.current = null
+        lastLoggedRemainingSecRef.current = null
+    } else {
+      setProcessingStartTime(null)
+      setProcessingEtaSec(null)
+      setClientProcessingProgress(0)
+      setDisplayedRemainingSec(null)
+      processingJobIdRef.current = 'unknown'
+      lastLoggedProcessingTenthRef.current = null
+      lastLoggedRemainingSecRef.current = null
     }
-  }, [eta, currentStatus, dynamicEta, pendingUploads])
+  }, [pendingUploads])
 
-  // Update dynamic remaining time when prop changes
+  // Initialize QUEUED ticker with static duration from env
   useEffect(() => {
-    if (remainingTime !== undefined && currentStatus === "PROCESSING") {
-      // Only capture the INITIAL value when first entering PROCESSING
-      // After that, ignore all backend updates and let frontend countdown handle it
-      if (!initialRemainingTime) {
-        setInitialRemainingTime(remainingTime)
-        setDynamicRemainingTime(remainingTime)
-      }
-      // Backend sends the same initial value repeatedly, so we ignore all subsequent updates
+    const queuedFile = pendingUploads.find(f => f.status === 'QUEUED')
+    if (queuedFile) {
+      const start = queuedFile.queuedAt || Date.now()
+      setQueuedStartTime(start)
+      setQueuedDurationSec(QUEUED_SECONDS)
+      const elapsed = Math.max(0, (Date.now() - start) / 1000)
+      const initialProgress = Math.floor(Math.max(0, Math.min(99, (elapsed / QUEUED_SECONDS) * 100)))
+      setClientQueuedProgress(initialProgress)
+      const initialRemaining = Math.max(0, Math.ceil(QUEUED_SECONDS - elapsed))
+      setDisplayedQueuedRemainingSec(initialRemaining)
+      const jId = (queuedFile as any)?.jobId || (queuedFile as any)?.job_id
+      queuedJobIdRef.current = jId || 'unknown'
+      lastLoggedQueuedTenthRef.current = null
+      lastLoggedQueuedRemainingRef.current = null
+    } else {
+      setQueuedStartTime(null)
+      setClientQueuedProgress(0)
+      setDisplayedQueuedRemainingSec(null)
+      queuedJobIdRef.current = 'unknown'
+      lastLoggedQueuedTenthRef.current = null
+      lastLoggedQueuedRemainingRef.current = null
     }
-  }, [remainingTime, currentStatus, initialRemainingTime])
+  }, [pendingUploads])
 
-  // Countdown timer for ETA (QUEUED status)
+  // QUEUED progress ticker: 1% every (duration/100) seconds
   useEffect(() => {
-    if (currentStatus === "QUEUED") {
+    if (queuedStartTime && queuedDurationSec > 0) {
+      const tickMs = (queuedDurationSec / 100) * 1000
       const interval = setInterval(() => {
-        setDynamicEta((prev) => {
-          if (prev === undefined || prev <= 1) return 1
-          return prev - 1
+        const elapsed = (Date.now() - queuedStartTime) / 1000
+        const progress = Math.floor((elapsed / queuedDurationSec) * 100)
+        setClientQueuedProgress(prev => {
+          const value = Math.max(prev, Math.min(99, progress))
+          const currentTenth = Math.floor(value / 10) * 10
+          const lastTenth = lastLoggedQueuedTenthRef.current ?? -1
+          if (value > 0 && currentTenth !== lastTenth && currentTenth >= 10 && currentTenth <= 90) {
+            lastLoggedQueuedTenthRef.current = currentTenth
+            const jobId = queuedJobIdRef.current
+            const remaining = displayedQueuedRemainingSec ?? Math.max(0, Math.ceil(queuedDurationSec - elapsed))
+            log(`[UI] Reading File progress (ticker): ${currentTenth}%`, {
+              progress_percent: currentTenth,
+              elapsed_seconds: Math.floor(elapsed),
+              remaining_seconds: Math.floor(remaining),
+              total_seconds: queuedDurationSec,
+              job_id: jobId,
+            })
+          }
+          return value
         })
-      }, 1000)
-
+      }, tickMs)
       return () => clearInterval(interval)
     }
-  }, [currentStatus])
+  }, [queuedStartTime, queuedDurationSec, displayedQueuedRemainingSec])
 
-  // Countdown timer for remaining time (PROCESSING status)
+  // QUEUED ETA ticker: decrement 1s every second
   useEffect(() => {
-    if (currentStatus === "PROCESSING") {
+    if (queuedStartTime) {
       const interval = setInterval(() => {
-        setDynamicRemainingTime((prev) => {
-          if (prev === undefined || prev <= 1) return 1
-          return prev - 1
+        setDisplayedQueuedRemainingSec(prev => {
+          if (prev == null) return prev
+          const next = Math.max(0, prev - 1)
+          if (lastLoggedQueuedRemainingRef.current == null || next !== lastLoggedQueuedRemainingRef.current) {
+            lastLoggedQueuedRemainingRef.current = next
+            const jobId = queuedJobIdRef.current
+            log(`[UI] Reading File ETA tick: ${next}s remaining`, {
+              remaining_seconds: next,
+              total_seconds: queuedDurationSec,
+              job_id: jobId,
+            })
+          }
+          return next
         })
       }, 1000)
-
       return () => clearInterval(interval)
     }
-  }, [currentStatus])
+  }, [queuedStartTime, queuedDurationSec])
+
+  // Progress ticker: increment 1% every (ETA/100) seconds
+  useEffect(() => {
+    if (processingStartTime && processingEtaSec && processingEtaSec > 0) {
+      const tickIntervalMs = (processingEtaSec / 100) * 1000
+      const interval = setInterval(() => {
+        const elapsed = (Date.now() - processingStartTime) / 1000
+        const progress = Math.floor((elapsed / processingEtaSec) * 100)
+        const next = Math.max(0, Math.min(99, progress))
+        setClientProcessingProgress(prev => {
+          const value = Math.max(prev, next)
+          // Log on every 10% boundary crossed (10,20,...,90)
+          const currentTenth = Math.floor(value / 10) * 10
+          const lastTenth = lastLoggedProcessingTenthRef.current ?? -1
+          if (value > 0 && currentTenth !== lastTenth && currentTenth >= 10 && currentTenth <= 90) {
+            lastLoggedProcessingTenthRef.current = currentTenth
+            const jobId = processingJobIdRef.current
+            const remaining = displayedRemainingSec ?? Math.max(0, Math.ceil(processingEtaSec - elapsed))
+            log(`[UI] Converting progress (ticker): ${currentTenth}%`, {
+              progress_percent: currentTenth,
+              elapsed_seconds: Math.floor(elapsed),
+              remaining_seconds: Math.floor(remaining),
+              projected_eta: processingEtaSec,
+              job_id: jobId,
+            })
+          }
+          return value
+        })
+      }, tickIntervalMs)
+      return () => clearInterval(interval)
+    }
+  }, [processingStartTime, processingEtaSec])
+
+  // Remaining time ticker: decrement 1s each second
+  useEffect(() => {
+    if (processingStartTime) {
+      const interval = setInterval(() => {
+        setDisplayedRemainingSec(prev => {
+          if (prev == null) return prev
+          const next = Math.max(0, prev - 1)
+          // Log each second decremented
+          const last = lastLoggedRemainingSecRef.current
+          if (last == null || next !== last) {
+            lastLoggedRemainingSecRef.current = next
+            const jobId = processingJobIdRef.current
+            log(`[UI] ETA tick: ${next}s remaining`, {
+              remaining_seconds: next,
+              job_id: jobId,
+            })
+          }
+          return next
+        })
+      }, 1000)
+      return () => clearInterval(interval)
+    }
+  }, [processingStartTime])
 
   // Reset when status changes
   useEffect(() => {
     if (currentStatus === "COMPLETE") {
-      setDynamicEta(undefined)
-      setDynamicRemainingTime(undefined)
-      setInitialRemainingTime(undefined)
       setUploadEta(undefined)
       setLastUploadProgress(0)
     }
 
     // Reset PROCESSING-specific state when leaving PROCESSING
-    if (currentStatus !== "PROCESSING") {
-      setInitialRemainingTime(undefined)
-      setDynamicRemainingTime(undefined)
-    }
+    // No PROCESSING-specific local state to reset
 
-    // Reset QUEUED-specific state when leaving QUEUED
-    if (currentStatus !== "QUEUED") {
-      setDynamicEta(undefined)
-    }
+    // No QUEUED-specific state to reset
 
     // Reset UPLOADING-specific state when leaving UPLOADING
     if (currentStatus !== "UPLOADING") {
@@ -211,6 +342,13 @@ export function ConversionQueue({
           setUploadSpeed(initialSpeed)
           setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
         }
+        // Initialize displayed upload ETA from initial estimate
+        if (uploadEta && uploadEta > 0) {
+          setDisplayedUploadRemainingSec(uploadEta)
+        }
+        // Capture job id for logging
+        const jId = (uploadingFile as any)?.jobId || (uploadingFile as any)?.job_id
+        uploadJobIdRef.current = jId || 'unknown'
         return
       }
 
@@ -255,6 +393,8 @@ export function ConversionQueue({
 
           setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
           setLastEtaUpdateTime(now)
+          // Also refresh displayed countdown to match latest estimate
+          setDisplayedUploadRemainingSec(Math.max(1, Math.round(estimatedSeconds)))
         }
       }
     } else if (!isUploading) {
@@ -262,8 +402,41 @@ export function ConversionQueue({
       setUploadStartTime(0)
       setUploadSpeed(0)
       setUploadEta(undefined)
+      setDisplayedUploadRemainingSec(null)
     }
   }, [uploadProgress, currentStatus, pendingUploads])
+
+  // Keep displayed upload ETA in sync when a fresh estimate arrives
+  useEffect(() => {
+    if (uploadEta && uploadEta > 0) {
+      setDisplayedUploadRemainingSec(uploadEta)
+    }
+  }, [uploadEta])
+
+  // Progressive upload ETA countdown (decrement by 1s each second)
+  useEffect(() => {
+    const uploadingFile = pendingUploads.find(f => f.status === "UPLOADING")
+    const isUploading = currentStatus === "UPLOADING" || uploadingFile !== undefined
+    if (isUploading && displayedUploadRemainingSec != null) {
+      const interval = setInterval(() => {
+        setDisplayedUploadRemainingSec(prev => {
+          if (prev == null) return prev
+          const next = Math.max(0, prev - 1)
+          // Log each decrement
+          if (lastLoggedUploadRemainingRef.current == null || next !== lastLoggedUploadRemainingRef.current) {
+            lastLoggedUploadRemainingRef.current = next
+            const jobId = uploadJobIdRef.current
+            log(`[UI] Upload ETA tick: ${next}s remaining`, {
+              remaining_seconds: next,
+              job_id: jobId,
+            })
+          }
+          return next
+        })
+      }, 1000)
+      return () => clearInterval(interval)
+    }
+  }, [currentStatus, pendingUploads, displayedUploadRemainingSec])
 
   const isJobRunning = (file: PendingUpload) => {
     return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
@@ -341,7 +514,7 @@ export function ConversionQueue({
       )
     }
 
-    // Check file's own status property first (from polling)
+    // Check file's own status property first (from session update)
     if (file.status) {
       switch (file.status) {
         case "UPLOADING":
@@ -462,67 +635,43 @@ export function ConversionQueue({
         stage: 0,
         progress: safeUploadPct,
         label,
-        eta: uploadEta
+        eta: displayedUploadRemainingSec ?? uploadEta
       }
     }
 
     // Stage 1: Reading File (downloading from S3 to worker)
     if (status === "QUEUED") {
-      // Simulate download progress based on file size and worker download speed
-      const fileSize = file.size
-      // Use backend-provided download speed if available, otherwise use default
-      const downloadSpeedMbps = file.worker_download_speed_mbps || DOWNLOAD_SPEED_MBITS_WORKER
-      const downloadSpeedBytes = (downloadSpeedMbps * 1024 * 1024) / 8 // Convert Mbps to bytes/s
-      const downloadTimeSeconds = fileSize / downloadSpeedBytes
-
-      // Calculate elapsed time based on when job entered QUEUED status
-      const elapsedSeconds = file.queuedAt ? (Date.now() - file.queuedAt) / 1000 : 0
-      const downloadProgress = Math.min(99, (elapsedSeconds / downloadTimeSeconds) * 100)
-      const safeProgress = Math.max(1, downloadProgress)
-      const remainingSeconds = Math.max(1, downloadTimeSeconds - elapsedSeconds)
-
-      console.log(`[QUEUED] Progress: ${safeProgress.toFixed(1)}% | Elapsed: ${elapsedSeconds.toFixed(1)}s | Total: ${downloadTimeSeconds.toFixed(1)}s | Remaining: ${remainingSeconds.toFixed(1)}s`)
-
       return {
         stage: 1,
-        progress: safeProgress,
+        progress: Math.max(0, Math.min(99, clientQueuedProgress)),
         label: "Reading File",
-        eta: remainingSeconds
+        eta: displayedQueuedRemainingSec ?? null
       }
     }
 
     // Stage 2: Converting
     if (status === "PROCESSING") {
-      // Use backend-provided processing progress with ETA-based simulation
-      if (file.processing_progress && file.processing_progress.projected_eta) {
-        const { elapsed_seconds, projected_eta, remaining_seconds } = file.processing_progress
-
-        // Calculate progress based on elapsed time vs projected ETA
-        const backendProgress = (elapsed_seconds / projected_eta) * 100
-
-        // Cap at 99% until actually complete (never show 100% in PROCESSING state)
-        const safeProgress = Math.max(1, Math.min(99, backendProgress))
-
-        // Log progress and ETA for debugging
-        console.log(`[PROCESSING] Progress: ${safeProgress.toFixed(1)}% | Elapsed: ${elapsed_seconds}s | Projected ETA: ${projected_eta}s | Remaining: ${remaining_seconds}s`)
-
+      // Prefer client-side ticker based on backend ETA
+      if (processingStartTime && processingEtaSec) {
+        return {
+          stage: 2,
+          progress: Math.max(0, Math.min(99, clientProcessingProgress)),
+          label: "Converting",
+          eta: displayedRemainingSec ?? null
+        }
+      }
+      // Fallback to backend-provided processing_progress if ticker not initialized
+      if (file.processing_progress) {
+        const { progress_percent, remaining_seconds } = file.processing_progress
+        const safeProgress = Math.max(0, Math.min(99, progress_percent || 0))
         return {
           stage: 2,
           progress: safeProgress,
           label: "Converting",
-          eta: remaining_seconds
+          eta: remaining_seconds ?? null
         }
       }
-
-      // Fallback if backend hasn't provided progress yet
-      const fallbackProgress = Math.max(1, conversionProgress || 1)
-      console.log(`[PROCESSING] Fallback progress: ${fallbackProgress}% (backend data not available yet)`)
-      return {
-        stage: 2,
-        progress: fallbackProgress,
-        label: "Converting",
-        eta: dynamicRemainingTime
-      }
+      return { stage: 2, progress: 0, label: "Converting", eta: null }
     }
 
     // Stage 3: Ready for Download
@@ -667,13 +816,22 @@ export function ConversionQueue({
   }
 
   const getProgressInfo = (file: PendingUpload, index: number) => {
-    // Check file's own status first (from polling)
-    if (file.status === "PROCESSING" && file.processing_progress) {
-      const { progress_percent, remaining_seconds } = file.processing_progress
-      return {
-        progress: Math.max(1, Math.min(100, progress_percent)),
-        label: remaining_seconds > 0 ? `${formatTime(remaining_seconds)} remaining` : "Converting",
-        showProgress: true,
+    // Check file's own status first (from session update)
+    if (file.status === "PROCESSING") {
+      if (processingStartTime && processingEtaSec) {
+        return {
+          progress: Math.max(0, Math.min(100, clientProcessingProgress)),
+          label: displayedRemainingSec != null ? `${formatTime(displayedRemainingSec)} remaining` : "Converting",
+          showProgress: true,
+        }
+      }
+      if (file.processing_progress) {
+        const { progress_percent, remaining_seconds } = file.processing_progress
+        return {
+          progress: Math.max(0, Math.min(100, progress_percent || 0)),
+          label: remaining_seconds != null ? `${formatTime(remaining_seconds)} remaining` : "Converting",
+          showProgress: true,
+        }
       }
     }
 
@@ -701,8 +859,8 @@ export function ConversionQueue({
 
     if (file.status === "QUEUED") {
       return {
-        progress: 1,
-        label: "Converting - 1%",
+        progress: Math.max(0, Math.min(100, clientQueuedProgress)),
+        label: displayedQueuedRemainingSec != null ? `${formatTime(displayedQueuedRemainingSec)} remaining` : "Reading File",
         showProgress: true,
       }
     }
@@ -735,20 +893,18 @@ export function ConversionQueue({
 
       case "QUEUED":
         return {
-          progress: 1,
-          label: "Converting - 1%",
+          progress: 0,
+          label: "Converting - 0%",
           showProgress: true,
         }
 
       case "PROCESSING":
-        // Fallback to old logic for backward compatibility - always show at least 1%
-        const safeConversionProgress = Math.max(1, Math.min(100, conversionProgress || 1))
-        const processingProgress = initialRemainingTime && dynamicRemainingTime
-          ? Math.max(1, Math.min(100, ((initialRemainingTime - dynamicRemainingTime) / initialRemainingTime) * 100))
-          : safeConversionProgress
+        // Use only backend data; if missing, show 0%
         return {
-          progress: processingProgress,
-          label: dynamicRemainingTime ? `${formatTime(dynamicRemainingTime)} remaining` : "Converting",
+          progress: file.processing_progress?.progress_percent ?? 0,
+          label: file.processing_progress?.remaining_seconds != null
+            ? `${formatTime(file.processing_progress.remaining_seconds)} remaining`
+            : "Converting",
           showProgress: true,
         }
 

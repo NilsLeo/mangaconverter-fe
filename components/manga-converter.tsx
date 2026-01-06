@@ -129,6 +129,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
   // Track which jobs are being dismissed (jobId -> true)
   const [dismissingJobs, setDismissingJobs] = useState<Set<string>>(new Set())
+  // Keep a short-lived memory of jobs the user dismissed to avoid re-adding
+  const recentlyDismissedRef = useRef<Map<string, number>>(new Map())
 
   // Track which jobs are being cancelled (jobId -> true)
   const [cancellingJobs, setCancellingJobs] = useState<Set<string>>(new Set())
@@ -166,13 +168,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     customHeight: 0,
   })
 
-  const MAX_FILES = 10
+  const MAX_FILES = Number(process.env.NEXT_PUBLIC_MAX_FILES) || 10
 
-  // Initialize polling for queue status updates (replaces WebSocket)
+  // Initialize WebSocket for queue status updates
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
-  const { queueStatus, isPolling, error: pollingError } = useQueuePolling(
-    Number(process.env.NEXT_PUBLIC_POLL_INTERVAL) || 1500,
-    true // always poll when component is mounted
+  const { queueStatus, isPolling: isConnecting, error: wsError } = useQueuePolling(
+    undefined,
+    true // always listen when component is mounted
   )
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -224,12 +226,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
           const recentJobs = jobs.filter((job) => (job.createdAt || job.timestamp) > oneDayAgo)
 
-          // Filter out dismissed jobs from restoration
-          const nonDismissedJobs = recentJobs.filter((job) => !isDismissedJob(job.jobId))
-
-          // Separate completed and active jobs
-          const completedJobs = nonDismissedJobs.filter((job) => job.status === "COMPLETE")
-          const activeJobs = nonDismissedJobs.filter(
+          // Separate completed and active jobs (backend/Redis filters dismissals)
+          const completedJobs = recentJobs.filter((job) => job.status === "COMPLETE")
+          const activeJobs = recentJobs.filter(
             (job) => job.status !== "COMPLETE" && job.status !== "ERRORED" && job.status !== "CANCELLED" && job.status !== "UPLOADING",
           )
 
@@ -356,44 +355,51 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     // This prevents bot sessions from being created
     const initialize = async () => {
       await loadPersistedJobs()
-      // Wait a short moment for first poll to complete (polling starts on mount)
-      // The useQueuePolling hook will fetch immediately on mount
+        // Wait a short moment for first session update to arrive
+        // The WebSocket hook will connect immediately on mount
       setTimeout(() => {
         setIsInitializing(false)
         log("Initialization complete, showing UI")
-      }, 500) // 500ms buffer to let first poll complete
+      }, 500) // 500ms buffer to let first session update arrive
     }
 
     initialize()
   }, []) // Run only once on mount
 
-  // Sync polling data with pendingUploads (replaces WebSocket updates)
+  // Sync WebSocket session updates with pendingUploads
   useEffect(() => {
     if (!queueStatus || !queueStatus.jobs) return
 
-    // Log all job statuses from this poll
+    // Log all job statuses from this WebSocket update
     if (queueStatus.jobs.length > 0) {
-      log(`[QUEUE POLL] Received ${queueStatus.jobs.length} job(s):`)
+      log(`[WEBSOCKET] Received ${queueStatus.jobs.length} job(s):`)
       queueStatus.jobs.forEach((job: QueueJob) => {
-        log(`  - Job ${job.job_id}: ${job.status} | ${job.filename}`)
+        log(`  - Job ${job.job_id}: ${job.status} | ${job.filename}`, {
+          dismissed_at: job.dismissed_at || null,
+          completed_at: job.completed_at || null,
+        })
       })
     } else {
-      log(`[QUEUE POLL] Received empty queue - all jobs dismissed or completed`)
+      log(`[WEBSOCKET] Received empty queue - all jobs dismissed or completed`)
     }
 
-    // Process all jobs from polling response
+    // Process all jobs from WebSocket session update
     queueStatus.jobs.forEach((job: QueueJob) => {
       setPendingUploads((prev) => {
         const existingFile = prev.find((f) => f.jobId === job.job_id)
 
         if (!existingFile) {
-          // Skip jobs being cancelled - they're in the process of being removed
-          if (cancellingJobs.has(job.job_id)) {
+          // Skip jobs recently dismissed by the user (avoid re-adding)
+          const ts = recentlyDismissedRef.current.get(job.job_id)
+          if (ts && Date.now() - ts < 60_000) {
             return prev
           }
-
-          // Skip dismissed jobs - they've been removed by user action
-          if (isDismissedJob(job.job_id)) {
+          // If user is dismissing this job, ignore it in incoming updates
+          if (dismissingJobs.has(job.job_id)) {
+            return prev
+          }
+          // Skip jobs being cancelled - they're in the process of being removed
+          if (cancellingJobs.has(job.job_id)) {
             return prev
           }
 
@@ -407,8 +413,18 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             return prev
           }
 
-          // Job from polling not in our list - add it with placeholder File
+          // Job from WebSocket not in our list - add it with placeholder File
           // This handles jobs that completed while user was away or on different device
+          log(`[STATUS CHANGE] New job discovered: ${job.job_id} (${job.status})`, {
+            job_id: job.job_id,
+            filename: job.filename,
+            status: job.status,
+            device_profile: job.device_profile,
+            source: 'websocket',
+            dismissed_at: job.dismissed_at || null,
+            completed_at: job.completed_at || null,
+          })
+
           const newUpload: PendingUpload = {
             name: job.filename,
             size: job.file_size,
@@ -427,7 +443,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             newUpload.isConverted = true
             newUpload.convertedName = job.output_filename || job.filename // Use output filename if available
             newUpload.downloadId = job.job_id
-            newUpload.convertedTimestamp = Date.now()
+            newUpload.convertedTimestamp = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
 
             // Move to converted files (only if not dismissed)
             setConvertedFiles((prevConverted) => {
@@ -445,27 +461,43 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               }, ...prevConverted]
             })
 
-            // Only show toast if we haven't shown it for this job yet
+            // Only show toast if just completed (within last 10s) and not yet shown
             if (!completionToastsShown.current.has(job.job_id)) {
-              completionToastsShown.current.add(job.job_id)
-              toast.success(`Conversion completed for ${job.filename}`)
+              const completedMs = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
+              if (Date.now() - completedMs <= 10_000) {
+                completionToastsShown.current.add(job.job_id)
+                toast.success(`Conversion completed for ${job.filename}`)
+              }
             }
 
-            // Don't add COMPLETE jobs to pendingUploads - they go directly to convertedFiles
-            return prev
+            // Also show a completed card in the queue UI
+            return [...prev, newUpload]
           }
 
           return [...prev, newUpload]
         }
 
-        // Update file with latest status from polling
+        // Update file with latest status from WebSocket update
         return prev.map((f) => {
           if (f.jobId !== job.job_id) return f
 
           // If job was cancelled, remove it from pending uploads
           if (job.status === "CANCELLED") {
-            log(`[QUEUE POLL] Job ${job.job_id} was cancelled, removing from UI`)
+            log(`[WEBSOCKET] Job ${job.job_id} was cancelled, removing from UI`)
             return null // Will be filtered out below
+          }
+
+          // Log status changes
+          if (f.status !== job.status) {
+            log(`[STATUS CHANGE] Job ${job.job_id}: ${f.status || 'NEW'} → ${job.status}`, {
+              job_id: job.job_id,
+              filename: job.filename,
+              old_status: f.status || 'NEW',
+              new_status: job.status,
+              device_profile: job.device_profile,
+              dismissed_at: job.dismissed_at || null,
+              completed_at: job.completed_at || null,
+            })
           }
 
           const updated = {
@@ -484,7 +516,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             updated.isConverted = true
             updated.convertedName = job.output_filename || job.filename // Use output filename if available
             updated.downloadId = job.job_id
-            updated.convertedTimestamp = Date.now()
+            updated.convertedTimestamp = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
 
             // Move to converted files if not already there
             setConvertedFiles((prevConverted) => {
@@ -502,10 +534,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               }, ...prevConverted]
             })
 
-            // Only show toast if we haven't shown it for this job yet
+            // Only show toast if just completed (within last 10s) and not yet shown
             if (!completionToastsShown.current.has(job.job_id)) {
-              completionToastsShown.current.add(job.job_id)
-              toast.success(`Conversion completed for ${job.filename}`)
+              const completedMs = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
+              if (Date.now() - completedMs <= 10_000) {
+                completionToastsShown.current.add(job.job_id)
+                toast.success(`Conversion completed for ${job.filename}`)
+              }
             }
           }
 
@@ -514,17 +549,17 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       })
     })
 
-    // Remove jobs that are no longer in polling response
+    // Remove jobs that are no longer present in the WebSocket update
     // This runs ALWAYS (even when queue is empty) to clean up dismissed/cancelled jobs
     setPendingUploads((prev) => {
-      const pollingJobIds = new Set(queueStatus.jobs.map(job => job.job_id))
+      const wsJobIds = new Set(queueStatus.jobs.map(job => job.job_id))
 
       return prev.filter(file => {
         // Keep files without jobId (not yet uploaded)
         if (!file.jobId) return true
 
-        // Keep files that are in the polling response
-        if (pollingJobIds.has(file.jobId)) return true
+        // Keep files that are in the latest WebSocket update
+        if (wsJobIds.has(file.jobId)) return true
 
         // Keep files being cancelled (they'll be removed once cancellation completes)
         if (cancellingJobs.has(file.jobId)) return true
@@ -532,10 +567,10 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         // Keep files being dismissed (they'll be removed once dismissal completes)
         if (dismissingJobs.has(file.jobId)) return true
 
-        // Remove all other jobs that are missing from polling response
+        // Remove all other jobs that are missing from this WebSocket update
         // This handles dismissed/cancelled jobs filtered out by backend
         // Completed files are already in convertedFiles, so they can be safely removed from pendingUploads
-        log(`[QUEUE POLL] Removing job ${file.jobId} (${file.name}) - no longer in polling response`)
+        log(`[WEBSOCKET] Removing job ${file.jobId} (${file.name}) - no longer in session update`)
         return false
       })
     })
@@ -603,53 +638,20 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     }
   }
 
-  const addToDismissedJobs = (jobId: string) => {
-    try {
-      const stored = localStorage.getItem("dismissed_jobs")
-      const dismissed = stored ? JSON.parse(stored) : []
-
-      // Add job ID with timestamp
-      dismissed.push({
-        jobId,
-        dismissedAt: Date.now(),
-      })
-
-      // Clean up old dismissed jobs (older than 24 hours)
-      const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-      const recentDismissed = dismissed.filter((d: any) => d.dismissedAt > oneDayAgo)
-
-      localStorage.setItem("dismissed_jobs", JSON.stringify(recentDismissed))
-    } catch (error) {
-      logError("Failed to add job to dismissed list:", error)
-    }
-  }
-
-  const isDismissedJob = (jobId: string): boolean => {
-    try {
-      const stored = localStorage.getItem("dismissed_jobs")
-      if (!stored) return false
-
-      const dismissed = JSON.parse(stored)
-      return dismissed.some((d: any) => d.jobId === jobId)
-    } catch (error) {
-      logError("Failed to check dismissed jobs:", error)
-      return false
-    }
-  }
+  // Redis/DB handle dismissed filtering; no local cache required
 
   const handleDismissJob = async (file: PendingUpload) => {
     if (file.jobId) {
       // Immediately remove job from UI (don't wait for backend)
       setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
 
-      // Track dismissal to prevent re-adding from polling
-      addToDismissedJobs(file.jobId)
-
       // Remove from localStorage
       removeJobFromStorage(file.jobId, true)
 
       // Mark job as being dismissed (show spinner - but job already removed from list)
       setDismissingJobs((prev) => new Set(prev).add(file.jobId!))
+      // Remember dismissal to avoid re-adding from WebSocket for a short time
+      recentlyDismissedRef.current.set(file.jobId!, Date.now())
 
       // Call backend to set dismissed_at timestamp (for all job statuses)
       try {
@@ -658,7 +660,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
         log(`Dismissing job ${file.jobId}`, { filename: file.name, status: file.status })
 
-        const response = await fetch(`${API_BASE_URL}/jobs/${file.jobId}/cancel`, {
+        const response = await fetch(`${API_BASE_URL}/jobs/${file.jobId}/dismiss`, {
           method: 'POST',
           headers: {
             'X-Session-Key': sessionKey,
@@ -667,7 +669,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         })
 
         if (response.ok) {
-          log(`Job ${file.jobId} dismissed successfully - backend will filter from next poll`)
+          log(`Job ${file.jobId} dismissed successfully - session update will reflect dismissal`)
           toast.success(`Dismissed: ${file.name}`)
         } else if (response.status === 401) {
           // Session expired - clear it and reload page
@@ -693,19 +695,33 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         })
       }
     }
-    // Job already removed from UI immediately (don't wait for backend/polling)
+    // Job already removed from UI immediately (don't wait for backend/session)
   }
 
-  // Polling-based job monitoring (WebSocket replaced with polling)
+  // Periodically clean up recentlyDismissed entries older than 2 minutes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now()
+      const map = recentlyDismissedRef.current
+      for (const [jobId, ts] of map.entries()) {
+        if (now - ts > 120_000) {
+          map.delete(jobId)
+        }
+      }
+    }, 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // WebSocket-based job monitoring
   const startJobMonitoring = (jobId: string, filename: string) => {
-    log(`[POLLING] Job ${jobId} will be monitored via polling`)
+    log(`[WEBSOCKET] Monitoring job ${jobId} via session updates`)
 
     // No-op: Polling handles monitoring automatically via useEffect above
     // Just save to storage so job persists across refreshes
     saveJobToStorage(jobId, filename, 0, "QUEUED")
   }
 
-  // Legacy WebSocket code removed - now using polling instead
+  // Using WebSocket session updates (legacy polling removed)
 
   const handleFileUpload = (files: File[]) => {
     if (isConverting) {
@@ -960,7 +976,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         setUploadProgress(1)
         setCurrentStatus("UPLOADING")
 
-        // Start upload and conversion process with immediate status polling
+        // Start upload and conversion process, WebSocket will stream session updates
         let uploadPromise
         try {
           uploadPromise = uploadFileAndConvert(
@@ -978,12 +994,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 setUploadProgressConfirmed(confirmedProgress)
               }
 
-              // Log whenever a new full percent is rendered
+              // Log upload progress at 10% intervals (0%, 10%, 20%, ..., 100%)
               const currentPercent = Math.floor(progress)
-              if (currentPercent !== lastLoggedProgressRef.current && currentPercent >= 0 && currentPercent <= 100) {
-                lastLoggedProgressRef.current = currentPercent
-                log(`[UI] Progress bar updated: ${currentPercent}%`, {
-                  progress_percent: currentPercent,
+              const currentTenth = Math.floor(currentPercent / 10) * 10
+              if (currentTenth !== lastLoggedProgressRef.current && currentTenth >= 0 && currentTenth <= 100) {
+                lastLoggedProgressRef.current = currentTenth
+                log(`[UI] Uploading progress: ${currentTenth}%`, {
+                  progress_percent: currentTenth,
                   raw_progress: progress.toFixed(2),
                   completed_parts: fullProgressData?.completedParts,
                   total_parts: fullProgressData?.totalParts,
@@ -1021,12 +1038,20 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               jobId = createdJobId // Assign to the loop's jobId
               setCurrentStatus("UPLOADING") // Set initial status
 
+              log(`[STATUS CHANGE] Job ${jobId}: → UPLOADING`, {
+                job_id: jobId,
+                filename: currentFile.name,
+                status: 'UPLOADING',
+                file_size: currentFile.size,
+                source: 'upload_start'
+              })
+
               saveJobToStorage(jobId, currentFile.name, currentFile.size, "UPLOADING")
               setPendingUploads((prev) =>
                 prev.map((f) => (f.name === currentFile.name && f.size === currentFile.size && !f.jobId ? { ...f, jobId, status: "UPLOADING", isMonitoring: true } : f)),
               )
 
-              log("Job created - polling will track progress", jobId, {
+              log("Job created - session updates will track progress", jobId, {
                 initialStatus: "UPLOADING",
               })
             }
@@ -1080,10 +1105,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           throw uploadError
         })
 
-        // Polling-based job monitoring - WebSocket code removed
-        // The polling hook (useQueuePolling) automatically tracks job status
-        // Just wait for upload to complete, polling handles the rest
-        log(`[POLLING] Job ${jobId} submitted, polling will track progress`)
+        // WebSocket-based monitoring - hook automatically tracks job status
+        // Just wait for upload to complete; session updates handle the rest
+        log(`[WEBSOCKET] Job ${jobId} submitted; session updates will track progress`)
 
         // Wait for upload to complete
         await uploadCompletePromise
@@ -1091,15 +1115,12 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         log("Upload complete for job", jobId, { filename: currentFile.name })
 
         // Polling will automatically update status and handle completion
-        // No need to manually update status - polling hook does it all
+        // No need to manually update status - WebSocket hook does it all
 
-        // Dismiss the upload toast
-        toast.success(`Upload complete: ${currentFile.name}`, {
-          id: toastId,
-          duration: 3000,
-        })
+        // Remove the loading toast without showing an "upload complete" message
+        toast.dismiss(toastId)
 
-        log("File uploaded successfully, polling will track conversion", jobId, {
+        log("File uploaded successfully; session updates will track conversion", jobId, {
           filename: currentFile.name
         })
 
@@ -1223,7 +1244,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
     // IMMEDIATELY remove from UI - don't wait for backend response
     removeJobFromStorage(file.jobId)
-    addToDismissedJobs(file.jobId)
 
     // Remove from pendingUploads immediately
     setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
@@ -1314,10 +1334,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       logError("Failed to remove job from localStorage:", error)
     }
 
-    // Track dismissal to prevent re-adding from polling
-    if (file.downloadId) {
-      addToDismissedJobs(file.downloadId)
-    }
+    // Backend/session updates handle dismissal filtering
 
     // Remove from React state
     setConvertedFiles((prev) => prev.filter((f) => f.id !== file.id))
@@ -1425,15 +1442,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
         {convertedFiles.length > 0 && (
           <div className="space-y-3">
-            {/* <ConvertedFiles removed> */}
-            {process.env.NEXT_PUBLIC_TTL && (
-              <Alert variant="success">
-                <Clock className="h-4 w-4" />
-                <AlertDescription>
-                  Files will be available for {Number.parseInt(process.env.NEXT_PUBLIC_TTL) * 24} hours after conversion
-                </AlertDescription>
-              </Alert>
-            )}
+            {/* Removed TTL availability callout */}
           </div>
         )}
 

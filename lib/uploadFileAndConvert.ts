@@ -284,7 +284,7 @@ export async function uploadFileAndConvert(
       throw new Error("Invalid job creation response - missing job_id")
     }
 
-    // Notify that job was created - this enables immediate status polling
+    // Notify that job was created - session updates will track status immediately
     log("Job creation successful, notifying callback", jobData.job_id, {
       hasCallback: !!onJobCreated,
       jobId: jobData.job_id,

@@ -11,6 +11,9 @@ export interface QueueJob {
   device_profile: string
   file_size: number
   output_file_size?: number // output file size (only present for COMPLETE jobs)
+  is_dismissed?: boolean // whether a COMPLETE job has been dismissed
+  dismissed_at?: string // ISO timestamp if dismissed
+  completed_at?: string // ISO timestamp when job completed
   worker_download_speed_mbps?: number // Worker download speed in Mbps (only present for QUEUED jobs)
   upload_progress?: {
     completed_parts: number
@@ -37,79 +40,24 @@ export interface QueueStatus {
 /**
  * Hook to receive queue status updates via WebSocket
  *
- * Replaces HTTP polling with WebSocket push notifications
+ * Uses WebSocket push notifications for real-time updates
  * Backend broadcasts complete job state for session whenever any job updates
- * Falls back to polling if WebSocket connection fails
  *
- * @param interval - Fallback polling interval in milliseconds (default: 30000ms)
+ * @param _interval - Unused, kept for API compatibility
  * @param enabled - Whether updates are enabled (default: true)
  */
 export function useQueuePolling(
-  interval = 30000, // Fallback polling interval (30s, was 7.5s)
+  _interval = 30000, // Unused parameter, kept for backward compatibility
   enabled = true
 ) {
   const { isLoading: sessionLoading } = useSessionManager()
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
-  const [isPolling, setIsPolling] = useState(false)
+  const [isConnecting, setIsConnecting] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [transportMode, setTransportMode] = useState<'websocket' | 'polling' | 'connecting'>('connecting')
 
   const socketRef = useRef<Socket | null>(null)
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const lastFetchRef = useRef<number>(0)
-  const reconnectAttemptsRef = useRef<number>(0)
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8060'
-
-  // Fallback polling function (only used if WebSocket fails)
-  const fetchQueueStatus = useCallback(async () => {
-    if (!enabled || transportMode === 'websocket') return
-
-    const now = Date.now()
-    if (now - lastFetchRef.current < 500) return
-    lastFetchRef.current = now
-
-    try {
-      setIsPolling(true)
-      setError(null)
-
-      const sessionKey = getSessionKey()
-      if (!sessionKey) return
-
-      console.log('[POLLING FALLBACK] Fetching with session key:', sessionKey?.substring(0, 8) + '...')
-
-      const response = await fetch(`${API_BASE_URL}/api/queue/status`, {
-        method: 'GET',
-        headers: {
-          'X-Session-Key': sessionKey,
-          'Content-Type': 'application/json',
-        },
-      })
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          console.warn('[POLLING FALLBACK] 401 Unauthorized - session expired')
-          removeSessionKey()
-          await ensureSession()
-          return
-        }
-        throw new Error(`Failed to fetch queue status: ${response.statusText}`)
-      }
-
-      const data: QueueStatus = await response.json()
-      console.log(`[POLLING FALLBACK] Fetched status: ${data.jobs.length} jobs`)
-      setQueueStatus(data)
-    } catch (err) {
-      if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
-        // Silently ignore network errors
-        return
-      }
-      console.error('[POLLING FALLBACK] Error:', err)
-      setError(err instanceof Error ? err.message : 'Unknown error')
-    } finally {
-      setIsPolling(false)
-    }
-  }, [enabled, transportMode, API_BASE_URL])
 
   // WebSocket connection management
   useEffect(() => {
@@ -124,15 +72,15 @@ export function useQueuePolling(
     }
 
     console.log('[WEBSOCKET] Connecting to', API_BASE_URL)
-    setTransportMode('connecting')
+    setIsConnecting(true)
 
     // Create Socket.IO connection
     const socket = io(API_BASE_URL, {
-      transports: ['websocket'], // WebSocket only (no long-polling fallback)
+      transports: ['websocket'], // WebSocket only
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity, // Keep trying to reconnect
       timeout: 10000,
       auth: {
         session_key: sessionKey
@@ -144,9 +92,8 @@ export function useQueuePolling(
     // Connection established
     socket.on('connect', () => {
       console.log('[WEBSOCKET] Connected with socket ID:', socket.id)
-      setTransportMode('websocket')
+      setIsConnecting(false)
       setError(null)
-      reconnectAttemptsRef.current = 0
 
       // Subscribe to session updates
       console.log('[WEBSOCKET] Subscribing to session:', sessionKey.substring(0, 8) + '...')
@@ -157,30 +104,19 @@ export function useQueuePolling(
     socket.on('session_update', (data: QueueStatus) => {
       console.log(`[WEBSOCKET] Received session update: ${data.jobs?.length || 0} jobs`)
       setQueueStatus(data)
-      setIsPolling(false) // Update received, not polling anymore
     })
 
     // Connection errors
     socket.on('connect_error', (err) => {
-      reconnectAttemptsRef.current++
-      console.error('[WEBSOCKET] Connection error:', err.message, `(attempt ${reconnectAttemptsRef.current})`)
-
-      // After 3 failed attempts, fall back to polling
-      if (reconnectAttemptsRef.current >= 3) {
-        console.warn('[WEBSOCKET] Too many failed attempts, falling back to polling')
-        setTransportMode('polling')
-        setError('WebSocket connection failed, using polling fallback')
-      }
+      console.error('[WEBSOCKET] Connection error:', err.message)
+      setIsConnecting(true)
+      setError(`WebSocket connection error: ${err.message}`)
     })
 
     // Disconnected
     socket.on('disconnect', (reason) => {
       console.warn('[WEBSOCKET] Disconnected:', reason)
-
-      // If server disconnected us, fall back to polling
-      if (reason === 'io server disconnect' || reason === 'transport close') {
-        setTransportMode('polling')
-      }
+      setIsConnecting(true)
     })
 
     // Error from server
@@ -197,52 +133,21 @@ export function useQueuePolling(
     }
   }, [enabled, sessionLoading, API_BASE_URL])
 
-  // Fallback polling (only active if WebSocket fails)
-  useEffect(() => {
-    if (!enabled || sessionLoading || transportMode !== 'polling') {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current)
-        pollingIntervalRef.current = null
-      }
-      return
-    }
-
-    console.log('[POLLING FALLBACK] Starting polling interval:', interval, 'ms')
-
-    // Initial fetch
-    fetchQueueStatus()
-
-    // Set up interval
-    pollingIntervalRef.current = setInterval(fetchQueueStatus, interval)
-
-    return () => {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current)
-        pollingIntervalRef.current = null
-      }
-    }
-  }, [fetchQueueStatus, interval, enabled, sessionLoading, transportMode])
-
   // Manual refresh function
   const refresh = useCallback(() => {
-    if (transportMode === 'websocket' && socketRef.current?.connected) {
-      // Request immediate update via WebSocket
+    if (socketRef.current?.connected) {
       const sessionKey = getSessionKey()
       if (sessionKey) {
         console.log('[WEBSOCKET] Requesting manual refresh')
         socketRef.current.emit('request_session_status', { session_key: sessionKey })
       }
-    } else {
-      // Fall back to polling
-      fetchQueueStatus()
     }
-  }, [transportMode, fetchQueueStatus])
+  }, [])
 
   return {
     queueStatus,
-    isPolling: isPolling || transportMode === 'connecting',
+    isPolling: isConnecting,
     error,
     refresh,
-    transportMode, // Expose transport mode for debugging
   }
 }
