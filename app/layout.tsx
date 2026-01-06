@@ -117,71 +117,18 @@ export default function RootLayout({
           <meta name="msapplication-tap-highlight" content="no" />
           <meta name="theme-color" content="#8b5cf6" />
 
-          {/* Privacy-friendly analytics by Plausible — load only in production to avoid localhost warnings */}
-          {process.env.NODE_ENV === "production" && (
-            <>
-              <script async src="https://plausible.io/js/pa-7QeSUnhaJo56JwKrcEOR7.js"></script>
-              <script
-                dangerouslySetInnerHTML={{
-                  __html: `
-                    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
-                    plausible.init()
-                  `,
-                }}
-              />
-            </>
-          )}
-        </head>
-        <body className={`${mplus.variable} ${kosugiMaru.variable} ${zenMaruGothic.variable} antialiased`}>
-          {/* Install console silencer to filter noisy dev logs and third-party infos */}
+          {/* Privacy-friendly analytics by Plausible */}
+          <script async src="https://plausible.io/js/pa-7QeSUnhaJo56JwKrcEOR7.js"></script>
           <script
             dangerouslySetInnerHTML={{
               __html: `
-                (function(){
-                  try {
-                    if (typeof window === 'undefined') return;
-                    const blockedPrefixes = [
-                      'Download the React DevTools',
-                      'Clerk: Clerk has been loaded with development keys',
-                      '[WEBSOCKET]',
-                      '[useSession]',
-                      '[HomePage]',
-                      '[MyDownloads]',
-                      '[MangaConverter]',
-                      '[claimLicense]',
-                      '[ensureSession]',
-                      '[getOrCreateUserLicense]',
-                      '[v0]'
-                    ];
-                    const blockedSubstrings = [
-                      '[SESSION CREATED]',
-                      'Received empty queue - all jobs dismissed or completed'
-                    ];
-                    const shouldBlock = (firstArg) => {
-                      if (typeof firstArg !== 'string') return false;
-                      if (blockedPrefixes.some((p) => firstArg.startsWith(p))) return true;
-                      if (blockedSubstrings.some((s) => firstArg.includes(s))) return true;
-                      return false;
-                    };
-                    const orig = {
-                      log: console.log.bind(console),
-                      info: console.info.bind(console),
-                      warn: console.warn.bind(console),
-                      debug: console.debug.bind(console),
-                      error: console.error.bind(console),
-                    };
-                    ['log','info','warn','debug'].forEach((method) => {
-                      console[method] = function(...args){
-                        try { if (shouldBlock(args[0])) return; } catch (_) {}
-                        return orig[method](...args);
-                      };
-                    });
-                    // Keep errors untouched
-                  } catch(_) { /* noop */ }
-                })();
+                window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+                plausible.init()
               `,
             }}
           />
+        </head>
+        <body className={`${mplus.variable} ${kosugiMaru.variable} ${zenMaruGothic.variable} antialiased`}>
           <ErrorBoundary>
             <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
               <ConverterModeProvider>
