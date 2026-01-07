@@ -1,13 +1,3 @@
-/**
- * File validation utilities for manga converter.
- *
- * This module provides validation functions for file uploads, including
- * checking file extensions and rejecting unsupported formats.
- */
-
-/**
- * Supported file formats - must match backend validation
- */
 export const SUPPORTED_FORMATS = {
   // Direct conversion formats (no extraction needed)
   direct: [".pdf", ".epub"],

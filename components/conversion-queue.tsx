@@ -1,19 +1,32 @@
 "use client"
 
+import type React from "react"
+
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Loader2, FileText, AlertTriangle, X, Download, XCircle, Settings, Upload, Cloud, BookOpen, Cog, Save } from "lucide-react"
+import {
+  Loader2,
+  FileText,
+  AlertTriangle,
+  X,
+  Download,
+  XCircle,
+  Settings,
+  Upload,
+  BookOpen,
+  Cog,
+  CheckCircle2,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { motion } from "framer-motion"
 import { useState, useEffect, useRef } from "react"
 import type { PendingUpload, AdvancedOptionsType } from "./manga-converter"
 import { fetchWithLicense } from "@/lib/utils"
-import { log, logError, logWarn, logDebug } from "@/lib/logger"
+import { log, logError } from "@/lib/logger"
 import { toast } from "sonner"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
-const DOWNLOAD_SPEED_MBITS_WORKER = parseFloat(process.env.NEXT_PUBLIC_DOWNLOAD_SPEED_MBITS_WORKER || "250")
-const QUEUED_SECONDS = parseInt(process.env.NEXT_PUBLIC_QUEUED_SECONDS || "5", 10)
+const QUEUED_SECONDS = Number.parseInt(process.env.NEXT_PUBLIC_QUEUED_SECONDS || "5", 10)
 
 interface ConversionQueueProps {
   pendingUploads: PendingUpload[]
@@ -80,7 +93,7 @@ export function ConversionQueue({
   const [uploadSpeed, setUploadSpeed] = useState<number>(0) // bytes per second
   const [uploadStartTime, setUploadStartTime] = useState<number>(0)
   const [lastEtaUpdateTime, setLastEtaUpdateTime] = useState<number>(0)
-  const uploadJobIdRef = useRef<string>('unknown')
+  const uploadJobIdRef = useRef<string>("unknown")
   const lastLoggedUploadRemainingRef = useRef<number | null>(null)
 
   // Client-side PROCESSING ticker (based on backend-provided ETA at start)
@@ -91,13 +104,13 @@ export function ConversionQueue({
   // Logging refs for 10% progress steps and ETA second decrements
   const lastLoggedProcessingTenthRef = useRef<number | null>(null)
   const lastLoggedRemainingSecRef = useRef<number | null>(null)
-  const processingJobIdRef = useRef<string>('unknown')
+  const processingJobIdRef = useRef<string>("unknown")
   // QUEUED progressive ticker state
   const [queuedStartTime, setQueuedStartTime] = useState<number | null>(null)
   const [queuedDurationSec, setQueuedDurationSec] = useState<number>(QUEUED_SECONDS)
   const [clientQueuedProgress, setClientQueuedProgress] = useState<number>(0)
   const [displayedQueuedRemainingSec, setDisplayedQueuedRemainingSec] = useState<number | null>(null)
-  const queuedJobIdRef = useRef<string>('unknown')
+  const queuedJobIdRef = useRef<string>("unknown")
   const lastLoggedQueuedTenthRef = useRef<number | null>(null)
   const lastLoggedQueuedRemainingRef = useRef<number | null>(null)
 
@@ -120,38 +133,38 @@ export function ConversionQueue({
 
   // Initialize client-side PROCESSING tickers when backend ETA is available
   useEffect(() => {
-    const processingFile = pendingUploads.find(f => f.status === "PROCESSING" && f.processing_progress)
+    const processingFile = pendingUploads.find((f) => f.status === "PROCESSING" && f.processing_progress)
     const pp = processingFile?.processing_progress
     if (pp?.projected_eta && pp.projected_eta > 0) {
-        const baseElapsed = pp.elapsed_seconds ?? 0
-        const startMs = Date.now() - baseElapsed * 1000
-        setProcessingStartTime(startMs)
-        setProcessingEtaSec(pp.projected_eta)
-        // Start from backend-progress if provided
-        const initialProgress = pp.progress_percent != null
+      const baseElapsed = pp.elapsed_seconds ?? 0
+      const startMs = Date.now() - baseElapsed * 1000
+      setProcessingStartTime(startMs)
+      setProcessingEtaSec(pp.projected_eta)
+      // Start from backend-progress if provided
+      const initialProgress =
+        pp.progress_percent != null
           ? Math.floor(Math.max(0, Math.min(99, pp.progress_percent)))
           : Math.floor(Math.max(0, Math.min(99, (baseElapsed / pp.projected_eta) * 100)))
-        setClientProcessingProgress(initialProgress)
-        const initialRemaining = pp.remaining_seconds != null
-          ? pp.remaining_seconds
-          : Math.max(0, Math.ceil(pp.projected_eta - baseElapsed))
-        setDisplayedRemainingSec(initialRemaining)
-        // Track job id for logging
-        const jId = (processingFile as any)?.jobId || (processingFile as any)?.job_id
-        if (jId) {
-          processingJobIdRef.current = jId
-        } else {
-          processingJobIdRef.current = 'unknown'
-        }
-        // Reset logging refs when (re)initializing ticker
-        lastLoggedProcessingTenthRef.current = null
-        lastLoggedRemainingSecRef.current = null
+      setClientProcessingProgress(initialProgress)
+      const initialRemaining =
+        pp.remaining_seconds != null ? pp.remaining_seconds : Math.max(0, Math.ceil(pp.projected_eta - baseElapsed))
+      setDisplayedRemainingSec(initialRemaining)
+      // Track job id for logging
+      const jId = (processingFile as any)?.jobId || (processingFile as any)?.job_id
+      if (jId) {
+        processingJobIdRef.current = jId
+      } else {
+        processingJobIdRef.current = "unknown"
+      }
+      // Reset logging refs when (re)initializing ticker
+      lastLoggedProcessingTenthRef.current = null
+      lastLoggedRemainingSecRef.current = null
     } else {
       setProcessingStartTime(null)
       setProcessingEtaSec(null)
       setClientProcessingProgress(0)
       setDisplayedRemainingSec(null)
-      processingJobIdRef.current = 'unknown'
+      processingJobIdRef.current = "unknown"
       lastLoggedProcessingTenthRef.current = null
       lastLoggedRemainingSecRef.current = null
     }
@@ -159,7 +172,7 @@ export function ConversionQueue({
 
   // Initialize QUEUED ticker with static duration from env
   useEffect(() => {
-    const queuedFile = pendingUploads.find(f => f.status === 'QUEUED')
+    const queuedFile = pendingUploads.find((f) => f.status === "QUEUED")
     if (queuedFile) {
       const start = queuedFile.queuedAt || Date.now()
       setQueuedStartTime(start)
@@ -170,14 +183,14 @@ export function ConversionQueue({
       const initialRemaining = Math.max(0, Math.ceil(QUEUED_SECONDS - elapsed))
       setDisplayedQueuedRemainingSec(initialRemaining)
       const jId = (queuedFile as any)?.jobId || (queuedFile as any)?.job_id
-      queuedJobIdRef.current = jId || 'unknown'
+      queuedJobIdRef.current = jId || "unknown"
       lastLoggedQueuedTenthRef.current = null
       lastLoggedQueuedRemainingRef.current = null
     } else {
       setQueuedStartTime(null)
       setClientQueuedProgress(0)
       setDisplayedQueuedRemainingSec(null)
-      queuedJobIdRef.current = 'unknown'
+      queuedJobIdRef.current = "unknown"
       lastLoggedQueuedTenthRef.current = null
       lastLoggedQueuedRemainingRef.current = null
     }
@@ -190,7 +203,7 @@ export function ConversionQueue({
       const interval = setInterval(() => {
         const elapsed = (Date.now() - queuedStartTime) / 1000
         const progress = Math.floor((elapsed / queuedDurationSec) * 100)
-        setClientQueuedProgress(prev => {
+        setClientQueuedProgress((prev) => {
           const value = Math.max(prev, Math.min(99, progress))
           const currentTenth = Math.floor(value / 10) * 10
           const lastTenth = lastLoggedQueuedTenthRef.current ?? -1
@@ -217,7 +230,7 @@ export function ConversionQueue({
   useEffect(() => {
     if (queuedStartTime) {
       const interval = setInterval(() => {
-        setDisplayedQueuedRemainingSec(prev => {
+        setDisplayedQueuedRemainingSec((prev) => {
           if (prev == null) return prev
           const next = Math.max(0, prev - 1)
           if (lastLoggedQueuedRemainingRef.current == null || next !== lastLoggedQueuedRemainingRef.current) {
@@ -244,7 +257,7 @@ export function ConversionQueue({
         const elapsed = (Date.now() - processingStartTime) / 1000
         const progress = Math.floor((elapsed / processingEtaSec) * 100)
         const next = Math.max(0, Math.min(99, progress))
-        setClientProcessingProgress(prev => {
+        setClientProcessingProgress((prev) => {
           const value = Math.max(prev, next)
           // Log on every 10% boundary crossed (10,20,...,90)
           const currentTenth = Math.floor(value / 10) * 10
@@ -272,7 +285,7 @@ export function ConversionQueue({
   useEffect(() => {
     if (processingStartTime) {
       const interval = setInterval(() => {
-        setDisplayedRemainingSec(prev => {
+        setDisplayedRemainingSec((prev) => {
           if (prev == null) return prev
           const next = Math.max(0, prev - 1)
           // Log each second decremented
@@ -315,7 +328,7 @@ export function ConversionQueue({
   // Calculate upload ETA based on real-time upload speed (bytes per second)
   useEffect(() => {
     // Check both global status and per-file status
-    const uploadingFile = pendingUploads.find(f => f.status === "UPLOADING")
+    const uploadingFile = pendingUploads.find((f) => f.status === "UPLOADING")
     const isUploading = currentStatus === "UPLOADING" || uploadingFile !== undefined
 
     if (isUploading && uploadProgress !== undefined && uploadProgress > 0) {
@@ -329,7 +342,7 @@ export function ConversionQueue({
         setLastEtaUpdateTime(now)
 
         // Calculate initial ETA
-        const currentFile = uploadingFile || pendingUploads.find(f => f.status === "UPLOADING")
+        const currentFile = uploadingFile || pendingUploads.find((f) => f.status === "UPLOADING")
         if (currentFile && currentFile.size) {
           const fileSize = currentFile.size
           const uploadedBytes = currentFile.upload_progress?.uploaded_bytes || (uploadProgress / 100) * fileSize
@@ -348,20 +361,19 @@ export function ConversionQueue({
         }
         // Capture job id for logging
         const jId = (uploadingFile as any)?.jobId || (uploadingFile as any)?.job_id
-        uploadJobIdRef.current = jId || 'unknown'
+        uploadJobIdRef.current = jId || "unknown"
         return
       }
 
       // Get current file being uploaded
-      const currentFile = uploadingFile || pendingUploads.find(f => f.status === "UPLOADING")
+      const currentFile = uploadingFile || pendingUploads.find((f) => f.status === "UPLOADING")
       if (!currentFile || !currentFile.size) {
         return
       }
 
       const fileSize = currentFile.size
       // Use actual uploaded bytes from progress data if available, otherwise calculate from percentage
-      const uploadedBytes = currentFile.upload_progress?.uploaded_bytes
-        || (uploadProgress / 100) * fileSize
+      const uploadedBytes = currentFile.upload_progress?.uploaded_bytes || (uploadProgress / 100) * fileSize
       const progressDelta = uploadProgress - lastUploadProgress
       const timeDelta = (now - lastUploadTime) / 1000 // Convert to seconds
       const etaTimeDelta = (now - lastEtaUpdateTime) / 1000 // Time since last ETA update
@@ -370,16 +382,15 @@ export function ConversionQueue({
       if (progressDelta > 0.1 && timeDelta > 0.2) {
         // Calculate instantaneous speed (bytes uploaded in this interval / time elapsed)
         const bytesDelta = currentFile.upload_progress?.uploaded_bytes
-          ? (uploadedBytes - (lastUploadProgress / 100) * fileSize)
+          ? uploadedBytes - (lastUploadProgress / 100) * fileSize
           : (progressDelta / 100) * fileSize
         const instantSpeed = bytesDelta / timeDelta
 
         // Use exponential moving average to smooth out speed fluctuations
         // This prevents ETA from jumping around too much
         const smoothingFactor = 0.3 // Lower = more smoothing
-        const smoothedSpeed = uploadSpeed === 0
-          ? instantSpeed
-          : (smoothingFactor * instantSpeed) + ((1 - smoothingFactor) * uploadSpeed)
+        const smoothedSpeed =
+          uploadSpeed === 0 ? instantSpeed : smoothingFactor * instantSpeed + (1 - smoothingFactor) * uploadSpeed
 
         setUploadSpeed(smoothedSpeed)
         setLastUploadProgress(uploadProgress)
@@ -415,11 +426,11 @@ export function ConversionQueue({
 
   // Progressive upload ETA countdown (decrement by 1s each second)
   useEffect(() => {
-    const uploadingFile = pendingUploads.find(f => f.status === "UPLOADING")
+    const uploadingFile = pendingUploads.find((f) => f.status === "UPLOADING")
     const isUploading = currentStatus === "UPLOADING" || uploadingFile !== undefined
     if (isUploading && displayedUploadRemainingSec != null) {
       const interval = setInterval(() => {
-        setDisplayedUploadRemainingSec(prev => {
+        setDisplayedUploadRemainingSec((prev) => {
           if (prev == null) return prev
           const next = Math.max(0, prev - 1)
           // Log each decrement
@@ -625,7 +636,7 @@ export function ConversionQueue({
     if (status === "UPLOADING") {
       // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
       // The backend's percentage is based on completed parts only, which lags behind actual upload progress
-      const uploadPct = uploadProgress || parseFloat(file.upload_progress?.percentage) || 1
+      const uploadPct = uploadProgress || Number.parseFloat(file.upload_progress?.percentage) || 1
       const safeUploadPct = Math.max(1, Math.min(100, uploadPct))
       let label = `Uploading - ${Math.round(safeUploadPct)}%`
       if (uploadSpeed > 0) {
@@ -635,7 +646,7 @@ export function ConversionQueue({
         stage: 0,
         progress: safeUploadPct,
         label,
-        eta: displayedUploadRemainingSec ?? uploadEta
+        eta: displayedUploadRemainingSec ?? uploadEta,
       }
     }
 
@@ -645,7 +656,7 @@ export function ConversionQueue({
         stage: 1,
         progress: Math.max(0, Math.min(99, clientQueuedProgress)),
         label: "Reading File",
-        eta: displayedQueuedRemainingSec ?? null
+        eta: displayedQueuedRemainingSec ?? null,
       }
     }
 
@@ -657,7 +668,7 @@ export function ConversionQueue({
           stage: 2,
           progress: Math.max(0, Math.min(99, clientProcessingProgress)),
           label: "Converting",
-          eta: displayedRemainingSec ?? null
+          eta: displayedRemainingSec ?? null,
         }
       }
       // Fallback to backend-provided processing_progress if ticker not initialized
@@ -668,7 +679,7 @@ export function ConversionQueue({
           stage: 2,
           progress: safeProgress,
           label: "Converting",
-          eta: remaining_seconds ?? null
+          eta: remaining_seconds ?? null,
         }
       }
       return { stage: 2, progress: 0, label: "Converting", eta: null }
@@ -686,10 +697,10 @@ export function ConversionQueue({
     const { stage, progress, label, eta } = getTimelineStage(file, index)
 
     const stages = [
-      { icon: Upload, label: "Uploading", active: stage >= 0 },
-      { icon: BookOpen, label: "Reading File", active: stage >= 1 },
-      { icon: Cog, label: "Converting", active: stage >= 2 },
-      { icon: Save, label: "Ready for Download", active: stage >= 3 },
+      { icon: Upload, label: "Upload", shortLabel: "Upload", active: stage >= 0 },
+      { icon: BookOpen, label: "Reading", shortLabel: "Read", active: stage >= 1 },
+      { icon: Cog, label: "Converting", shortLabel: "Convert", active: stage >= 2 },
+      { icon: CheckCircle2, label: "Complete", shortLabel: "Done", active: stage >= 3 },
     ]
 
     // Calculate cumulative progress (each stage is 25% of total)
@@ -698,118 +709,230 @@ export function ConversionQueue({
     let cumulativeProgress = 0
 
     if (stage >= 0) {
-      // Add completed stages
       cumulativeProgress = stage * stageWeight
-      // Add current stage progress
       cumulativeProgress += (progress / 100) * stageWeight
     }
 
     return (
-      <div className="space-y-3">
-        {/* Timeline with action buttons */}
-        <div className="relative flex items-center justify-between gap-4 px-4">
-          {/* Timeline stages */}
-          <div className="relative flex items-center justify-between flex-1">
-          {stages.map((s, i) => {
-            const Icon = s.icon
-            const isCurrentStage = i === stage
-            const isPastStage = i < stage
-            const isFutureStage = i > stage
-
-            // Calculate how much of this segment should be filled
-            const segmentStart = i * stageWeight
-            const segmentEnd = (i + 1) * stageWeight
-            let segmentFillPercent = 0
-
-            if (cumulativeProgress >= segmentEnd) {
-              // Fully filled
-              segmentFillPercent = 100
-            } else if (cumulativeProgress > segmentStart) {
-              // Partially filled
-              segmentFillPercent = ((cumulativeProgress - segmentStart) / stageWeight) * 100
-            }
-
-            return (
-              <div key={i} className="flex flex-col items-center relative">
-                {/* Icon */}
-                <div
-                  className={`rounded-full p-2 z-10 transition-all ${
-                    isCurrentStage
-                      ? "bg-primary text-primary-foreground animate-pulse"
-                      : isPastStage
-                      ? "bg-primary/70 text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                </div>
-
-                {/* Stage label below icon */}
-                <div className="mt-2 text-xs text-center min-w-[120px]">
-                  <span className={isCurrentStage ? "font-medium text-foreground" : "text-muted-foreground"}>
-                    {s.label}
-                    {isCurrentStage && (i !== 0 || currentStatus !== "UPLOADING") && (
-                      <span className="ml-1 text-[10px] text-muted-foreground">
-                        {Math.round(progress)}%
-                        {eta != null && eta > 0 && (
-                          <> · {formatTime(eta)}</>
-                        )}
-                      </span>
-                    )}
+      <div className="w-full">
+        <div className="block sm:hidden space-y-3">
+          {/* Header row with stage info and action button */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              {(() => {
+                const CurrentIcon = stages[Math.max(0, stage)]?.icon || Upload
+                const isActive = stage >= 0
+                return (
+                  <div
+                    className={`
+                      rounded-full p-2 flex-shrink-0 transition-all
+                      ${isActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}
+                    `}
+                  >
+                    <CurrentIcon className={`h-4 w-4 ${isActive ? "animate-pulse" : ""}`} />
+                  </div>
+                )
+              })()}
+              <div className="min-w-0 flex-1">
+                <span className="text-sm font-medium text-foreground block truncate">
+                  {stages[Math.max(0, stage)]?.label || "Ready"}
+                </span>
+                {stage >= 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    {Math.round(progress)}%{eta != null && eta > 0 && ` · ${formatTime(eta)}`}
                   </span>
-                </div>
-
-                {/* Connecting line from right edge of icon to next icon */}
-                {i < stages.length - 1 && (
-                  <>
-                    {/* Background line (gray) - extends from right of current icon to left of next */}
-                    <div className="absolute top-4 left-[calc(50%+20px)] right-[calc(-100%-20px)] h-0.5 -translate-y-1/2 bg-muted" />
-                    {/* Progress line - two layers for upload stage */}
-                    {segmentFillPercent > 0 && i === 0 && currentStatus === "UPLOADING" && (
-                      <>
-                        {/* Light red layer: Total uploaded bytes (irrespective of backend confirmation) */}
-                        <div
-                          className="absolute top-4 left-[calc(50%+20px)] h-0.5 bg-primary/40 -translate-y-1/2 transition-all duration-300"
-                          style={{ width: `calc((100% + 40px) * ${segmentFillPercent / 100})` }}
-                        />
-                        {/* Dark red layer: Backend-confirmed parts only */}
-                        {uploadProgressConfirmed > 0 && (
-                          <div
-                            className="absolute top-4 left-[calc(50%+20px)] h-0.5 bg-primary -translate-y-1/2 transition-all duration-300"
-                            style={{ width: `calc((100% + 40px) * ${(uploadProgressConfirmed / 100) * (segmentFillPercent / 100)})` }}
-                          />
-                        )}
-                        {/* Label below progress bar showing received/sent */}
-                        <div className="absolute top-6 left-[calc(50%+20px)] text-[10px] text-muted-foreground whitespace-nowrap">
-                          <span className="text-primary">received: {Math.round(uploadProgressConfirmed)}%</span>
-                          {" / "}
-                          <span className="text-primary/40">sent: {Math.round(uploadProgress)}%</span>
-                          {eta != null && eta > 0 && (
-                            <> · {formatTime(eta)}</>
-                          )}
-                        </div>
-                      </>
-                    )}
-                    {/* Single progress line for other stages */}
-                    {segmentFillPercent > 0 && (i !== 0 || currentStatus !== "UPLOADING") && (
-                      <div
-                        className="absolute top-4 left-[calc(50%+20px)] h-0.5 bg-primary -translate-y-1/2 transition-all duration-300"
-                        style={{ width: `calc((100% + 40px) * ${segmentFillPercent / 100})` }}
-                      />
-                    )}
-                  </>
                 )}
               </div>
-            )
-          })}
+            </div>
+            {/* Action button on right */}
+            {actionButtons && <div className="flex-shrink-0">{actionButtons}</div>}
           </div>
 
-          {/* Action buttons on the right */}
-          {actionButtons && (
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {actionButtons}
+          {/* Progress track with stage indicators */}
+          <div className="relative pt-1 pb-1">
+            {/* Track background */}
+            <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+              {/* Upload stage: show dual layers for sent/received */}
+              {stage === 0 && currentStatus === "UPLOADING" ? (
+                <>
+                  {/* Light layer: total sent */}
+                  <div
+                    className="absolute inset-y-0 left-0 top-1 h-2 bg-primary/40 rounded-full transition-all duration-300"
+                    style={{ width: `${Math.min(100, cumulativeProgress)}%` }}
+                  />
+                  {/* Dark layer: confirmed received */}
+                  {uploadProgressConfirmed > 0 && (
+                    <div
+                      className="absolute inset-y-0 left-0 top-1 h-2 bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${Math.min(100, (uploadProgressConfirmed / 100) * stageWeight)}%` }}
+                    />
+                  )}
+                </>
+              ) : (
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.min(100, cumulativeProgress)}%` }}
+                />
+              )}
+            </div>
+
+            {/* Stage markers overlaid on track */}
+            <div className="absolute inset-x-0 top-1 h-2 flex items-center justify-between pointer-events-none">
+              {stages.map((s, i) => {
+                const isCompleted = i < stage
+                const isCurrent = i === stage
+                return (
+                  <div
+                    key={i}
+                    className={`
+                      w-2 h-2 rounded-full transition-all duration-300 ring-2 ring-background
+                      ${isCompleted ? "bg-primary" : isCurrent ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}
+                    `}
+                  />
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Stage labels row */}
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0">
+            {stages.map((s, i) => (
+              <span
+                key={i}
+                className={`
+                  transition-colors text-center w-12
+                  ${i === stage ? "text-foreground font-medium" : ""}
+                `}
+              >
+                {s.shortLabel}
+              </span>
+            ))}
+          </div>
+
+          {/* Upload speed info on mobile */}
+          {stage === 0 && currentStatus === "UPLOADING" && uploadSpeed > 0 && (
+            <div className="text-xs text-muted-foreground text-center bg-muted/50 rounded-md py-1.5 px-2">
+              {formatUploadSpeed(uploadSpeed)}
+              {uploadProgressConfirmed > 0 && (
+                <span className="ml-2 text-primary">· {Math.round(uploadProgressConfirmed)}% confirmed</span>
+              )}
             </div>
           )}
+        </div>
+
+        <div className="hidden sm:block">
+          <div className="flex items-start gap-4">
+            {/* Timeline stages */}
+            <div className="flex-1">
+              {/* Stage nodes container with relative positioning for connector */}
+              <div className="relative flex items-start justify-between">
+                {/* Background connector line - spans between first and last node centers */}
+                <div
+                  className="absolute h-0.5 bg-muted top-5"
+                  style={{
+                    left: "20px" /* half of node width (40px / 2) */,
+                    right: "20px" /* half of node width */,
+                  }}
+                />
+
+                {/* Progress connector line - contiguous fill based on cumulative progress */}
+                <div
+                  className="absolute h-0.5 bg-primary top-5 transition-all duration-500 ease-out"
+                  style={{
+                    left: "20px",
+                    /* Calculate width: total track width is (100% - 40px), progress fills portion of that */
+                    width: stage < 0 ? "0%" : `calc((100% - 40px) * ${Math.min(100, cumulativeProgress) / 100})`,
+                  }}
+                />
+
+                {/* Stage nodes */}
+                {stages.map((s, i) => {
+                  const Icon = s.icon
+                  const isCurrentStage = i === stage
+                  const isPastStage = i < stage
+                  const isFutureStage = i > stage
+
+                  return (
+                    <div key={i} className="flex flex-col items-center">
+                      {/* Icon container */}
+                      <div
+                        className={`
+                          relative z-10 flex items-center justify-center 
+                          w-10 h-10 rounded-full border-2 transition-all duration-300
+                          ${
+                            isCurrentStage
+                              ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                              : isPastStage
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-muted bg-background text-muted-foreground"
+                          }
+                        `}
+                      >
+                        {isPastStage ? (
+                          <CheckCircle2 className="h-5 w-5" />
+                        ) : (
+                          <Icon className={`h-5 w-5 ${isCurrentStage ? "animate-pulse" : ""}`} />
+                        )}
+                      </div>
+
+                      {/* Label */}
+                      <div className="mt-2 text-center">
+                        <span
+                          className={`
+                            text-xs font-medium transition-colors block
+                            ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
+                          `}
+                        >
+                          <span className="hidden lg:inline">{s.label}</span>
+                          <span className="lg:hidden">{s.shortLabel}</span>
+                        </span>
+
+                        {/* Progress info for current stage */}
+                        {isCurrentStage && (
+                          <div className="text-[10px] text-muted-foreground mt-0.5">
+                            {Math.round(progress)}%
+                            {eta != null && eta > 0 && <span className="hidden md:inline"> · {formatTime(eta)}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Upload progress detail (shown below timeline for upload stage) */}
+              {stage === 0 && currentStatus === "UPLOADING" && (
+                <div className="mt-4 mx-5">
+                  <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
+                    {/* Light layer: sent bytes */}
+                    <div
+                      className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.min(100, uploadProgress || 0)}%` }}
+                    />
+                    {/* Dark layer: confirmed received */}
+                    {uploadProgressConfirmed > 0 && (
+                      <div
+                        className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
+                      />
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+                    <span>
+                      Sent: {Math.round(uploadProgress || 0)}%
+                      {uploadProgressConfirmed > 0 && (
+                        <span className="ml-2 text-primary">· Confirmed: {Math.round(uploadProgressConfirmed)}%</span>
+                      )}
+                    </span>
+                    {uploadSpeed > 0 && <span>{formatUploadSpeed(uploadSpeed)}</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Action buttons on desktop - better aligned */}
+            {actionButtons && <div className="flex items-center flex-shrink-0 pt-0.5">{actionButtons}</div>}
+          </div>
         </div>
       </div>
     )
@@ -838,7 +961,8 @@ export function ConversionQueue({
     if (file.status === "UPLOADING") {
       // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
       // The backend's percentage is based on completed parts only, which lags behind actual upload progress
-      const percentage = uploadProgress || (file.upload_progress ? parseFloat(file.upload_progress.percentage) : 1)
+      const percentage =
+        uploadProgress || (file.upload_progress ? Number.parseFloat(file.upload_progress.percentage) : 1)
       // Always show at least 1%
       const safePercentage = Math.max(1, Math.min(100, percentage))
       let uploadLabel = `Uploading - ${Math.round(safePercentage)}%`
@@ -860,7 +984,8 @@ export function ConversionQueue({
     if (file.status === "QUEUED") {
       return {
         progress: Math.max(0, Math.min(100, clientQueuedProgress)),
-        label: displayedQueuedRemainingSec != null ? `${formatTime(displayedQueuedRemainingSec)} remaining` : "Reading File",
+        label:
+          displayedQueuedRemainingSec != null ? `${formatTime(displayedQueuedRemainingSec)} remaining` : "Reading File",
         showProgress: true,
       }
     }
@@ -902,9 +1027,10 @@ export function ConversionQueue({
         // Use only backend data; if missing, show 0%
         return {
           progress: file.processing_progress?.progress_percent ?? 0,
-          label: file.processing_progress?.remaining_seconds != null
-            ? `${formatTime(file.processing_progress.remaining_seconds)} remaining`
-            : "Converting",
+          label:
+            file.processing_progress?.remaining_seconds != null
+              ? `${formatTime(file.processing_progress.remaining_seconds)} remaining`
+              : "Converting",
           showProgress: true,
         }
 
@@ -912,7 +1038,6 @@ export function ConversionQueue({
         return null
     }
   }
-
 
   const downloadFile = async (file: PendingUpload) => {
     if (!file.downloadId) return
@@ -943,7 +1068,6 @@ export function ConversionQueue({
     }
   }
 
-
   return (
     <div className="space-y-3">
       {items.map((file, index) => {
@@ -960,47 +1084,71 @@ export function ConversionQueue({
             transition={{ delay: index * 0.05 }}
           >
             <Card
-              className={`${file.error ? "border-destructive/40 bg-destructive/5" : ""} ${isActive ? "border-primary/40" : ""} ${file.isConverted ? "border-green-500/40 bg-green-500/5" : ""}`}
+              className={`
+                transition-all duration-200
+                ${
+                  file.error
+                    ? "border-destructive/50 bg-destructive/5"
+                    : file.isConverted
+                      ? "border-green-500/50 bg-green-500/5"
+                      : "hover:border-muted-foreground/30"
+                }
+              `}
             >
               <div className="p-4 space-y-4">
-                {/* Header: Filename and ETA */}
+                {/* Header: Filename and metadata */}
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="rounded-md p-2 bg-muted/50 flex-shrink-0">
-                      <FileText className="h-5 w-5 text-muted-foreground" />
+                    <div
+                      className={`
+                      rounded-lg p-2.5 flex-shrink-0 transition-colors
+                      ${
+                        file.isConverted
+                          ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                          : file.error
+                            ? "bg-destructive/10 text-destructive"
+                            : "bg-muted text-muted-foreground"
+                      }
+                    `}
+                    >
+                      <FileText className="h-5 w-5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="font-medium truncate text-sm">
+                      <p className="font-medium truncate text-sm leading-tight">
                         {file.isConverted && file.convertedName ? file.convertedName : file.name}
                       </p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground mt-0.5">
                         {file.isConverted ? (
                           <>
                             {file.inputFileSize && file.outputFileSize && (
-                              <>
-                                <span>
-                                  {formatFileSize(file.inputFileSize)} → {formatFileSize(file.outputFileSize)}
-                                </span>
-                                <span>•</span>
-                              </>
+                              <span className="whitespace-nowrap">
+                                {formatFileSize(file.inputFileSize)} → {formatFileSize(file.outputFileSize)}
+                              </span>
                             )}
                             {file.actualDuration && (
                               <>
-                                <span>{formatTime(file.actualDuration)}</span>
-                                <span>•</span>
+                                <span className="hidden xs:inline">•</span>
+                                <span className="whitespace-nowrap">{formatTime(file.actualDuration)}</span>
                               </>
                             )}
                             {file.deviceProfile && deviceProfiles[file.deviceProfile] && (
-                              <span>{deviceProfiles[file.deviceProfile]}</span>
+                              <>
+                                <span className="hidden xs:inline">•</span>
+                                <span className="whitespace-nowrap hidden sm:inline">
+                                  {deviceProfiles[file.deviceProfile]}
+                                </span>
+                              </>
                             )}
                           </>
                         ) : (
                           <>
-                            <span>{formatFileSize(file.size)}</span>
+                            <span className="whitespace-nowrap">{formatFileSize(file.size)}</span>
                             {file.deviceProfile && deviceProfiles[file.deviceProfile] && (
                               <>
                                 <span>•</span>
-                                <span>{deviceProfiles[file.deviceProfile]}</span>
+                                <span className="whitespace-nowrap hidden sm:inline">
+                                  {deviceProfiles[file.deviceProfile]}
+                                </span>
                               </>
                             )}
                           </>
@@ -1009,103 +1157,144 @@ export function ConversionQueue({
                     </div>
                   </div>
 
+                  {/* Status badge - shown on header for completed/error states */}
+                  {(file.isConverted || file.error) && (
+                    <div className="flex-shrink-0">{getStatusBadge(file, index)}</div>
+                  )}
                 </div>
 
                 {/* Error message */}
                 {file.error && (
-                  <div className="flex items-center gap-2 text-sm text-destructive">
-                    <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">{file.error}</span>
+                  <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/5 rounded-lg p-3">
+                    <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                    <span>{file.error}</span>
                   </div>
                 )}
 
                 {/* Timeline with inline action buttons */}
-                {!file.error && !file.isConverted && renderTimeline(file, index, (
-                  <>
-                    {/* Unified Cancel/Dismiss/Remove button */}
-                    {(() => {
-                      const isCancelling = file.jobId ? cancellingJobs.has(file.jobId) : false
-                      const isDismissing = file.jobId ? dismissingJobs.has(file.jobId) : false
-                      const isLoading = isCancelling || isDismissing
+                {!file.error &&
+                  !file.isConverted &&
+                  renderTimeline(
+                    file,
+                    index,
+                    <>
+                      {(() => {
+                        const isCancelling = file.jobId ? cancellingJobs.has(file.jobId) : false
+                        const isDismissing = file.jobId ? dismissingJobs.has(file.jobId) : false
+                        const isLoading = isCancelling || isDismissing
 
-                      // Determine action based on job state
-                      if (jobRunning && onCancelJob) {
-                        // Active job (UPLOADING/QUEUED/PROCESSING) - show Cancel button
-                        return (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => {
-                              log("[v0] Cancel button clicked for job:", file.jobId)
-                              onCancelJob(file)
-                            }}
-                            disabled={isLoading}
-                            className="shadow-sm"
-                          >
-                            {isLoading ? (
-                              <>
-                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                Cancelling...
-                              </>
-                            ) : (
-                              <>
-                                <XCircle className="h-4 w-4 mr-2" />
-                                Cancel
-                              </>
-                            )}
-                          </Button>
-                        )
-                      } else if (!isActive && !jobRunning) {
-                        // Not started yet - show X icon button for remove
-                        return (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => onRemoveFile?.(file)}
-                            className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
-                            title="Remove"
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        )
-                      }
-                      return null
-                    })()}
-                  </>
-                ))}
+                        if (jobRunning && onCancelJob) {
+                          return (
+                            <TooltipProvider delayDuration={0}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      log("[v0] Cancel button clicked for job:", file.jobId)
+                                      onCancelJob(file)
+                                    }}
+                                    disabled={isLoading}
+                                    className={`
+                                      h-9 px-3
+                                      text-muted-foreground
+                                      hover:text-destructive hover:bg-destructive/10
+                                      active:bg-destructive/20
+                                      transition-colors duration-150
+                                      ${isLoading ? "opacity-60 pointer-events-none" : ""}
+                                    `}
+                                  >
+                                    {isLoading ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <XCircle className="h-4 w-4" />
+                                    )}
+                                    <span className="hidden sm:inline ml-1.5 text-sm font-medium">
+                                      {isLoading ? "Cancelling" : "Cancel"}
+                                    </span>
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="sm:hidden">
+                                  <p>{isLoading ? "Cancelling..." : "Cancel conversion"}</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
+                        } else if (!isActive && !jobRunning) {
+                          // Not started - Remove button
+                          return (
+                            <TooltipProvider delayDuration={0}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => onRemoveFile?.(file)}
+                                    className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                  >
+                                    <X className="h-4 w-4" />
+                                    <span className="sr-only">Remove file</span>
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="left">
+                                  <p>Remove file</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
+                        }
+                        return null
+                      })()}
+                    </>,
+                  )}
 
-                {/* Download and Dismiss buttons for completed files */}
                 {file.isConverted && (
-                  <div className="flex items-center justify-end gap-2">
-                    <Button
-                      onClick={() => downloadFile(file)}
-                      disabled={downloadingFiles[file.name]}
-                      size="sm"
-                      className="shadow-sm"
-                    >
-                      {downloadingFiles[file.name] ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Download className="h-4 w-4 mr-2" />
-                          Download
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => onDismissJob?.(file)}
-                      disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
-                      className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
-                      title="Dismiss"
-                    >
-                      {file.jobId && dismissingJobs.has(file.jobId) ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <X className="h-4 w-4" />
-                      )}
-                    </Button>
+                  <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/50">
+                    <span className="text-xs text-muted-foreground">Ready to download</span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        onClick={() => downloadFile(file)}
+                        disabled={downloadingFiles[file.name]}
+                        size="sm"
+                        className="shadow-sm"
+                      >
+                        {downloadingFiles[file.name] ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin sm:mr-2" />
+                            <span className="hidden sm:inline">Downloading</span>
+                          </>
+                        ) : (
+                          <>
+                            <Download className="h-4 w-4 sm:mr-2" />
+                            <span className="hidden sm:inline">Download</span>
+                          </>
+                        )}
+                      </Button>
+                      <TooltipProvider delayDuration={0}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => onDismissJob?.(file)}
+                              disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
+                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                            >
+                              {file.jobId && dismissingJobs.has(file.jobId) ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <X className="h-4 w-4" />
+                              )}
+                              <span className="sr-only">Dismiss</span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="left">
+                            <p>Dismiss from list</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1127,7 +1316,7 @@ export function ConversionQueue({
             onAddMoreFiles()
           }}
           disabled={isConverting || hasActiveJobs()}
-          className="w-full h-12 border-dashed hover:border-primary hover:bg-primary/5 bg-transparent"
+          className="w-full h-12 border-dashed border-2 hover:border-primary hover:bg-primary/5 bg-transparent transition-colors"
         >
           <FileText className="mr-2 h-4 w-4" />
           Add more files
@@ -1135,7 +1324,7 @@ export function ConversionQueue({
       )}
 
       {onOpenSidebar && onStartConversion && (
-        <div className="flex flex-col gap-3 mt-4 w-full">
+        <div className="flex flex-col sm:flex-row gap-3 mt-4 w-full">
           <Button
             variant="outline"
             size="lg"
@@ -1149,7 +1338,7 @@ export function ConversionQueue({
               onOpenSidebar()
             }}
             disabled={hasActiveJobs()}
-            className="w-full"
+            className="w-full sm:w-auto sm:flex-1"
           >
             <Settings className="h-5 w-5 mr-2" />
             Configure Options
@@ -1166,9 +1355,16 @@ export function ConversionQueue({
               onStartConversion()
             }}
             disabled={isConverting || hasActiveJobs() || (isReadyToConvert && !isReadyToConvert())}
-            className="w-full"
+            className="w-full sm:w-auto sm:flex-1"
           >
-            {isConverting ? "Converting..." : "Start Conversion"}
+            {isConverting ? (
+              <>
+                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                Converting...
+              </>
+            ) : (
+              "Start Conversion"
+            )}
           </Button>
         </div>
       )}

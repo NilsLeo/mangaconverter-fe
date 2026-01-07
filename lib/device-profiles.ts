@@ -31,4 +31,3 @@ export const DEVICE_PROFILES = {
   RmkPP: "reMarkable Paper Pro",
   OTHER: "Other",
 }
-

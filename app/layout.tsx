@@ -7,14 +7,14 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "sonner"
 import { ConverterModeProvider } from "@/contexts/converter-mode-context"
 import { ErrorBoundary } from "@/components/error-boundary"
-import { ClerkProvider } from "@clerk/nextjs"
+import { ConditionalClerkProvider } from "@/components/conditional-clerk-provider"
 
 const mplus = M_PLUS_Rounded_1c({
   weight: ["400", "700", "800"],
   subsets: ["latin"],
   variable: "--font-mplus",
   display: "swap",
-  preload: false, // prevent font preload warnings in dev
+  preload: false,
 })
 
 const kosugiMaru = Kosugi_Maru({
@@ -22,7 +22,7 @@ const kosugiMaru = Kosugi_Maru({
   subsets: ["latin"],
   variable: "--font-kosugi-maru",
   display: "swap",
-  preload: false, // avoid preloading if not needed at first paint
+  preload: false,
 })
 
 const zenMaruGothic = localFont({
@@ -45,7 +45,7 @@ const zenMaruGothic = localFont({
   ],
   variable: "--font-zen-maru-gothic",
   display: "swap",
-  preload: false, // let it load lazily; prevents preload warnings
+  preload: false,
 })
 
 export const metadata: Metadata = {
@@ -96,7 +96,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <ClerkProvider dynamic>
+    <ConditionalClerkProvider>
       <html lang="en" suppressHydrationWarning>
         <head>
           {/* Favicon and icons */}
@@ -133,12 +133,12 @@ export default function RootLayout({
             <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
               <ConverterModeProvider>
                 {children}
-                <Toaster />
+                <Toaster richColors position="top-center" />
               </ConverterModeProvider>
             </ThemeProvider>
           </ErrorBoundary>
         </body>
       </html>
-    </ClerkProvider>
+    </ConditionalClerkProvider>
   )
 }

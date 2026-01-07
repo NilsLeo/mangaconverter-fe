@@ -7,9 +7,6 @@ try {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -22,6 +19,8 @@ const nextConfig = {
     parallelServerBuildTraces: true,
     parallelServerCompiles: true,
   },
+  // Empty turbopack config to silence migration warning
+  turbopack: {},
   webpack: (config, { isServer }) => {
     if (isServer) {
       // Fix for "self is not defined" error in middleware
