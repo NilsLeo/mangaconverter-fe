@@ -13,7 +13,6 @@ import { fetchWithLicense, ensureSessionKey } from "@/lib/utils"
 import { log, logError, logWarn } from "@/lib/logger"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import type { ConvertedFileInfo } from "./converted-files" // Removed ConvertedFiles import since we're not using the separate section anymore
 import { LoaderIcon, ChevronsRight, BookOpenText, BookText } from "lucide-react" // Added BookOpenText and BookText
 import { AdvancedOptions } from "./advanced-options"
 import { FileUploader } from "./file-uploader"
@@ -113,7 +112,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>("Placeholder")
   const [isConverting, setIsConverting] = useState(false)
-  const [convertedFiles, setConvertedFiles] = useState<ConvertedFileInfo[]>([])
+  // No separate converted files list; rely on live session updates only
   // </CHANGE> Removed shared progress state - now tracked per-job in PendingUpload objects
   const [isUploaded, setIsUploaded] = useState<boolean>(false)
   const [currentStatus, setCurrentStatus] = useState<string | undefined>(undefined)
@@ -132,6 +131,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [dismissingJobs, setDismissingJobs] = useState<Set<string>>(new Set())
   // Keep a short-lived memory of jobs the user dismissed to avoid re-adding
   const recentlyDismissedRef = useRef<Map<string, number>>(new Map())
+
+  // Persist a short-lived cache of dismissed jobs to survive reloads
+  
 
   // Track which jobs are being cancelled (jobId -> true)
   const [cancellingJobs, setCancellingJobs] = useState<Set<string>>(new Set())
@@ -235,178 +237,12 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   }
 
   useEffect(() => {
-    const loadPersistedJobs = async () => {
-      try {
-        const stored = localStorage.getItem("monitored_jobs")
-        if (stored) {
-          const jobs = JSON.parse(stored) as Array<{
-            jobId: string
-            name: string
-            size: number
-            status: string
-            timestamp: number
-            createdAt?: number
-            inputFilename?: string
-            inputFileSize?: number
-            outputFilename?: string
-            outputFileSize?: number
-            downloadId?: string
-            actualDuration?: number // Added for actual duration
-            // Load per-file settings from storage
-            deviceProfile?: string
-            advancedOptions?: Partial<AdvancedOptionsType>
-            // Add fields for converted files
-            isConverted?: boolean
-            convertedName?: string
-            convertedTimestamp?: number
-            outputFileSize?: number
-            inputFileSize?: number
-            actualDuration?: number
-          }>
-
-          // Filter out jobs older than 24 hours
-          const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-          const recentJobs = jobs.filter((job) => (job.createdAt || job.timestamp) > oneDayAgo)
-
-          // Separate completed and active jobs (backend/Redis filters dismissals)
-          const completedJobs = recentJobs.filter((job) => job.status === "COMPLETE")
-          const activeJobs = recentJobs.filter(
-            (job) =>
-              job.status !== "COMPLETE" &&
-              job.status !== "ERRORED" &&
-              job.status !== "CANCELLED" &&
-              job.status !== "UPLOADING",
-          )
-
-          // Restore completed jobs to converted files
-          if (completedJobs.length > 0) {
-            const convertedFilesFromStorage = completedJobs.map((job) => ({
-              id: job.jobId,
-              originalName: job.inputFilename || job.name,
-              convertedName: job.outputFilename || job.name,
-              downloadId: job.downloadId || job.jobId,
-              timestamp: job.createdAt || job.timestamp,
-              device: job.deviceProfile || "Unknown device",
-              size: job.outputFileSize,
-              inputFileSize: job.inputFileSize,
-              actualDuration: job.actualDuration,
-            }))
-
-            setConvertedFiles(convertedFilesFromStorage)
-          }
-
-          // Create placeholder PendingUpload entries for active jobs
-          if (activeJobs.length > 0) {
-            const monitoringUploads: PendingUpload[] = activeJobs.map((job) => ({
-              name: job.name,
-              size: job.size,
-              file: new File([], job.name), // Placeholder file
-              jobId: job.jobId,
-              status: job.status,
-              isMonitoring: true,
-              // Restore per-file settings
-              deviceProfile: job.deviceProfile,
-              advancedOptions: job.advancedOptions,
-              // Restore converted file properties if applicable
-              isConverted: job.status === "COMPLETE", // Mark as converted if status is COMPLETE
-              convertedName: job.outputFilename,
-              downloadId: job.downloadId || job.jobId,
-              convertedTimestamp: job.createdAt || job.timestamp,
-              outputFileSize: job.outputFileSize,
-              inputFileSize: job.inputFileSize,
-              actualDuration: job.actualDuration,
-            }))
-
-            setPendingUploads(monitoringUploads)
-
-            // Start monitoring active jobs - check status first to see if they completed while offline
-            for (const upload of monitoringUploads) {
-              if (upload.jobId) {
-                try {
-                  // Check current status first
-                  const statusResponse = await fetchWithLicense(`/api/job-status/${upload.jobId}`)
-                  const statusData = await statusResponse.json()
-
-                  if (statusData.status === "COMPLETE") {
-                    // Job completed while offline - move to converted files
-                    saveJobToStorage(upload.jobId, upload.name, upload.size, statusData.status, {
-                      inputFilename: statusData.input_filename,
-                      inputFileSize: statusData.input_file_size,
-                      outputFilename: statusData.filename,
-                      outputFileSize: statusData.output_file_size,
-                      downloadId: upload.jobId,
-                      actualDuration: statusData.actual_duration,
-                      deviceProfile: statusData.device_profile,
-                      isConverted: true, // Mark as converted
-                      convertedName: statusData.filename,
-                      convertedTimestamp: Date.now(),
-                      outputFileSize: statusData.output_file_size,
-                      inputFileSize: statusData.input_file_size,
-                    })
-
-                    setConvertedFiles((prev) => [
-                      {
-                        id: upload.jobId,
-                        originalName: statusData.input_filename || upload.name,
-                        convertedName: statusData.filename || upload.name,
-                        downloadId: upload.jobId,
-                        timestamp: Date.now(),
-                        device: statusData.deviceProfile || "Unknown device",
-                        size: statusData.output_file_size,
-                        inputFileSize: statusData.input_file_size,
-                        actualDuration: statusData.actual_duration,
-                      },
-                      ...prev,
-                    ])
-
-                    setPendingUploads((prev) => prev.filter((f) => f.jobId !== upload.jobId))
-                  } else if (statusData.status === "CANCELLED") {
-                    // Job was cancelled - silently remove without error
-                    removeJobFromStorage(upload.jobId)
-                    setPendingUploads((prev) => prev.filter((f) => f.jobId !== upload.jobId))
-                  } else if (statusData.status === "ERRORED") {
-                    // Job failed while offline - update status
-                    saveJobToStorage(upload.jobId, upload.name, upload.size, statusData.status)
-                    setPendingUploads((prev) =>
-                      prev.map((f) =>
-                        f.jobId === upload.jobId
-                          ? { ...f, status: statusData.status, error: "Try a different file" }
-                          : f,
-                      ),
-                    )
-                  } else {
-                    // Job still active - start monitoring
-                    startJobMonitoring(upload.jobId, upload.name)
-                  }
-                } catch (error) {
-                  logError(`Failed to check status for job ${upload.jobId}:`, error)
-                  // If status check fails, still start monitoring
-                  startJobMonitoring(upload.jobId, upload.name)
-                }
-              }
-            }
-          }
-
-          // Update localStorage with filtered jobs
-          if (recentJobs.length !== jobs.length) {
-            localStorage.setItem("monitored_jobs", JSON.stringify(recentJobs))
-          }
-        }
-      } catch (error) {
-        logError("Failed to load persisted jobs:", error)
-      }
-    }
-
-    // Session initialization now happens on first user interaction (see page.tsx)
-    // This prevents bot sessions from being created
+    // No persisted jobs; rely entirely on WebSocket session updates
     const initialize = async () => {
-      await loadPersistedJobs()
-      // Wait a short moment for first session update to arrive
-      // The WebSocket hook will connect immediately on mount
       setTimeout(() => {
         setIsInitializing(false)
         log("Initialization complete, showing UI")
-      }, 500) // 500ms buffer to let first session update arrive
+      }, 300)
     }
 
     initialize()
@@ -463,6 +299,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           if (ts && Date.now() - ts < 60_000) {
             return prev
           }
+          
           // If user is dismissing this job, ignore it in incoming updates
           if (dismissingJobs.has(job.job_id)) {
             return prev
@@ -513,26 +350,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             newUpload.convertedName = job.output_filename || job.filename // Use output filename if available
             newUpload.downloadId = job.job_id
             newUpload.convertedTimestamp = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
-
-            // Move to converted files (only if not dismissed)
-            setConvertedFiles((prevConverted) => {
-              const alreadyConverted = prevConverted.some((cf) => cf.downloadId === job.job_id)
-              if (alreadyConverted) return prevConverted
-
-              return [
-                {
-                  id: job.job_id,
-                  originalName: job.filename,
-                  convertedName: job.filename,
-                  downloadId: job.job_id,
-                  timestamp: Date.now(),
-                  device: job.deviceProfile || "Unknown",
-                  size: job.file_size,
-                },
-                ...prevConverted,
-              ]
-            })
-
             // Only show toast if just completed (within last 10s) and not yet shown
             // Suppress completion toast
 
@@ -592,27 +409,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               updated.downloadId = job.job_id
               updated.convertedTimestamp = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
 
-              // Move to converted files if not already there
-              setConvertedFiles((prevConverted) => {
-                const alreadyConverted = prevConverted.some((cf) => cf.downloadId === job.job_id)
-                if (alreadyConverted) return prevConverted
-
-                return [
-                  {
-                    id: job.job_id,
-                    originalName: job.filename,
-                    convertedName: job.filename,
-                    downloadId: job.job_id,
-                    timestamp: Date.now(),
-                    device: job.deviceProfile || "Unknown",
-                    size: job.file_size,
-                  },
-                  ...prevConverted,
-                ]
-              })
-
-              // Only show toast if just completed (within last 10s) and not yet shown
-              // Suppress completion toast
+          // Only show toast if just completed (within last 10s) and not yet shown
+          // Suppress completion toast
             }
 
             return updated
@@ -622,7 +420,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     })
 
     // Remove jobs that are no longer present in the WebSocket update
-    // BUT keep QUEUED/PROCESSING jobs even if missing (mobile reconnect protection)
     setPendingUploads((prev) => {
       const wsJobIds = new Set(queueStatus.jobs.map((job) => job.job_id))
 
@@ -639,20 +436,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         // Keep files being dismissed (they'll be removed once dismissal completes)
         if (dismissingJobs.has(file.jobId)) return true
 
-        // IMPORTANT: Keep QUEUED and PROCESSING jobs even if missing from WebSocket update
-        // This prevents jobs from disappearing on mobile when WebSocket reconnects
-        // and misses intermediate updates. Jobs will be cleaned up when they reach
-        // COMPLETE/ERRORED/CANCELLED or after timeout.
-        if (file.status === "QUEUED" || file.status === "PROCESSING") {
-          console.log(
-            `[v0] Keeping ${file.status} job ${file.jobId} despite missing from WebSocket (mobile reconnect protection)`,
-          )
-          return true
-        }
-
         // Remove all other jobs that are missing from this WebSocket update
         // This handles dismissed/cancelled/completed jobs filtered out by backend
-        // Completed files are already in convertedFiles, so they can be safely removed from pendingUploads
         log(`[WEBSOCKET] Removing job ${file.jobId} (${file.name}) - no longer in session update`)
         return false
       })
@@ -718,27 +503,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             updated.actualDuration = statusData.actual_duration
             updated.downloadUrl = statusData.download_url // Added download URL
 
-            // Move to converted files if not already there
-            setConvertedFiles((prevConverted) => {
-              const alreadyConverted = prevConverted.some((cf) => cf.downloadId === jobId)
-              if (alreadyConverted) return prevConverted
-
-              return [
-                {
-                  id: jobId,
-                  originalName: f.name,
-                  convertedName: updated.convertedName!,
-                  downloadId: jobId,
-                  timestamp: Date.now(),
-                  device: statusData.device_profile || "Unknown",
-                  size: updated.outputFileSize,
-                  inputFileSize: updated.inputFileSize,
-                  actualDuration: updated.actualDuration,
-                },
-                ...prevConverted,
-              ]
-            })
-
             // Only show toast if just completed (within last 10s) and not yet shown
             // Suppress completion toast
           }
@@ -764,67 +528,16 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     })
   }, [jobStatuses, cancellingJobs, dismissingJobs])
 
-  const saveJobToStorage = (jobId: string, name: string, size: number, status: string, additionalData?: any) => {
-    try {
-      // Don't persist uploading jobs since they're ephemeral and can't be resumed
-      if (status === "UPLOADING") {
-        return
-      }
+  // Removed monitored_jobs persistence; no-op placeholders left for safety
+  const saveJobToStorage = (
+    _jobId: string,
+    _name: string,
+    _size: number,
+    _status: string,
+    _additionalData?: any,
+  ) => {}
 
-      const stored = localStorage.getItem("monitored_jobs")
-      // Use JSON.parse here, not JSON.Parse
-      const jobs = stored ? JSON.parse(stored) : []
-
-      // Check if job already exists
-      const existingIndex = jobs.findIndex((j: any) => j.jobId === jobId)
-      const jobData = {
-        jobId,
-        name,
-        size,
-        status,
-        timestamp: Date.now(),
-        createdAt: Date.now(), // Keep original creation time
-        ...additionalData,
-      }
-
-      if (existingIndex >= 0) {
-        // Preserve original creation time when updating
-        jobData.createdAt = jobs[existingIndex].createdAt || Date.now()
-        jobs[existingIndex] = jobData
-      } else {
-        jobs.push(jobData)
-      }
-
-      localStorage.setItem("monitored_jobs", JSON.stringify(jobs))
-    } catch (error) {
-      logError("Failed to save job to storage:", error)
-    }
-  }
-
-  const removeJobFromStorage = (jobId: string, force = false) => {
-    try {
-      const stored = localStorage.getItem("monitored_jobs")
-      if (stored) {
-        const jobs = JSON.parse(stored)
-
-        if (force) {
-          // Force removal (when user dismisses)
-          const filtered = jobs.filter((j: any) => j.jobId !== jobId)
-          localStorage.setItem("monitored_jobs", JSON.stringify(filtered))
-        } else {
-          // Don't remove completed jobs automatically - keep them for display
-          // Only remove jobs that are truly orphaned or user-dismissed
-          // CANCELLED jobs should be removed silently
-          const filtered = jobs.filter(
-            (j: any) => j.jobId !== jobId || j.status === "COMPLETE" || j.status === "ERRORED",
-          )
-          localStorage.setItem("monitored_jobs", JSON.stringify(filtered))
-        }
-      }
-    } catch (error) {
-      logError("Failed to remove job from storage:", error)
-    }
-  }
+  const removeJobFromStorage = (_jobId: string, _force = false) => {}
 
   // Redis/DB handle dismissed filtering; no local cache required
 
@@ -843,11 +556,11 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     // Immediately remove job from UI (don't wait for backend)
     setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
 
-    // Remove from localStorage
-    removeJobFromStorage(file.jobId, true)
+    // No local persistence to remove
 
     // Remember dismissal to avoid re-adding from WebSocket for a short time
     recentlyDismissedRef.current.set(file.jobId!, Date.now())
+    
 
     // Call backend to set dismissed_at timestamp (for all job statuses)
     try {
@@ -903,6 +616,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           map.delete(jobId)
         }
       }
+      
     }, 30_000)
     return () => clearInterval(interval)
   }, [])
@@ -910,10 +624,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   // WebSocket-based job monitoring
   const startJobMonitoring = (jobId: string, filename: string) => {
     log(`[WEBSOCKET] Monitoring job ${jobId} via session updates`)
-
-    // No-op: Polling handles monitoring automatically via useEffect above
-    // Just save to storage so job persists across refreshes
-    saveJobToStorage(jobId, filename, 0, "QUEUED")
+    // No local persistence
   }
 
   // Using WebSocket session updates (legacy polling removed)
@@ -1225,7 +936,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 source: "upload_start",
               })
 
-              saveJobToStorage(jobId, currentFile.name, currentFile.size, "UPLOADING")
+              // No local persistence for jobs
               setPendingUploads((prev) =>
                 prev.map((f) =>
                   f.name === currentFile.name && f.size === currentFile.size && !f.jobId
@@ -1421,9 +1132,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       // setCurrentStatus(undefined)
     }
 
-    // IMMEDIATELY remove from UI - don't wait for backend
-    removeJobFromStorage(file.jobId)
-
     // Remove from pendingUploads immediately
     setPendingUploads((prev) => prev.filter((f) => f.jobId !== file.jobId))
 
@@ -1487,40 +1195,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     setPendingUploads(newOrder)
   }
 
-  const clearConvertedFiles = () => {
-    // Remove all completed jobs from localStorage
-    try {
-      const stored = localStorage.getItem("monitored_jobs")
-      if (stored) {
-        const jobs = JSON.parse(stored)
-        const filteredJobs = jobs.filter((job: any) => job.status !== "COMPLETE")
-        localStorage.setItem("monitored_jobs", JSON.stringify(filteredJobs))
-      }
-    } catch (error) {
-      logError("Failed to clear completed jobs from localStorage:", error)
-    }
-
-    setConvertedFiles([])
-  }
-
-  const removeConvertedFile = (file: ConvertedFileInfo) => {
-    // Remove specific job from localStorage
-    try {
-      const stored = localStorage.getItem("monitored_jobs")
-      if (stored) {
-        const jobs = JSON.parse(stored)
-        const filteredJobs = jobs.filter((job: any) => job.jobId !== file.downloadId)
-        localStorage.setItem("monitored_jobs", JSON.stringify(filteredJobs))
-      }
-    } catch (error) {
-      logError("Failed to remove job from localStorage:", error)
-    }
-
-    // Backend/session updates handle dismissal filtering
-
-    // Remove from React state
-    setConvertedFiles((prev) => prev.filter((f) => f.id !== file.id))
-  }
+  // Converted files management removed
 
   const isReadyToConvert = () => {
     const hasFilesToConvert = pendingUploads.some((file) => !file.isConverted)
@@ -1658,7 +1333,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           </p>
         </section>
 
-        {convertedFiles.length > 0 && <div className="space-y-3">{/* Removed TTL availability callout */}</div>}
+        {/* Converted list removed */}
 
         {/* Signup CTA for anonymous users */}
         {isUserLoaded && !user && (
