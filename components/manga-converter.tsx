@@ -2,9 +2,10 @@
 
 import type React from "react"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react" // Added useCallback
 import { toast } from "sonner"
 import { uploadFileAndConvert } from "@/lib/uploadFileAndConvert" // make sure you import it
+import { measureUploadSpeed, saveUploadSpeed, getSavedUploadSpeed } from "@/lib/netSpeed"
 import { ConversionQueue } from "./conversion-queue"
 import { Footer } from "./footer"
 import { DEVICE_PROFILES } from "@/lib/device-profiles"
@@ -58,6 +59,7 @@ export type PendingUpload = {
     uploaded_bytes: number
     total_bytes: number
     percentage: number
+    confirmed_percentage?: number // Added confirmed percentage
   }
   worker_download_speed_mbps?: number // Worker download speed for simulating Reading File stage
   downloadUrl?: string // URL for downloading the converted file
@@ -112,12 +114,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const [selectedProfile, setSelectedProfile] = useState<string>("Placeholder")
   const [isConverting, setIsConverting] = useState(false)
   const [convertedFiles, setConvertedFiles] = useState<ConvertedFileInfo[]>([])
-  const [uploadProgress, setUploadProgress] = useState<number>(0)
-  const [uploadProgressConfirmed, setUploadProgressConfirmed] = useState<number>(0)
-  const [conversionProgress, setConversionProgress] = useState<number>(0)
+  // </CHANGE> Removed shared progress state - now tracked per-job in PendingUpload objects
   const [isUploaded, setIsUploaded] = useState<boolean>(false)
-  const [eta, setEta] = useState<number | undefined>(undefined)
-  const [remainingTime, setRemainingTime] = useState<number | undefined>(undefined)
   const [currentStatus, setCurrentStatus] = useState<string | undefined>(undefined)
 
   // Track last logged progress percent for logging changes
@@ -187,12 +185,42 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     connected: jobWsConnected,
     subscribeToJob,
     unsubscribeFromJob, // Imported unsubscribeFromJob
-    sendUploadProgress: wsSendUploadProgress,
     jobStatuses, // Added jobStatuses from useJobWebSocket hook
   } = useJobWebSocket(apiUrl)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const completionToastsShown = useRef<Set<string>>(new Set()) // Track which jobs have shown completion toast
+
+  // Handle progress updates during upload
+  const handleUploadProgress = useCallback((jobId: string, progress: number, confirmedProgress?: number) => {
+    setPendingUploads((prev) =>
+      prev.map((upload) => {
+        if (upload.jobId === jobId) {
+          return {
+            ...upload,
+            upload_progress: {
+              ...upload.upload_progress,
+              percentage: progress,
+              // Store confirmed progress if provided
+              ...(confirmedProgress !== undefined && {
+                confirmed_percentage: confirmedProgress,
+              }),
+            } as any,
+          }
+        }
+        return upload
+      }),
+    )
+
+    console.log(
+      `[2026-01-08T${new Date().toISOString().split("T")[1]}] [UI] Uploading progress: ${Math.round(progress)}%`,
+      {
+        job_id: jobId,
+        progress_percent: Math.round(progress),
+        raw_progress: progress.toFixed(2),
+      },
+    )
+  }, [])
 
   const handleAddMoreFiles = () => {
     fileInputRef.current?.click()
@@ -382,6 +410,29 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     }
 
     initialize()
+
+    // Early upload speed test on first mount (3s). Use cached if fresh.
+    const cached = getSavedUploadSpeed(5 * 60 * 1000)
+    if (!cached) {
+      log("[NetSpeed] No recent cached speed; running initial quick test")
+      let cancelled = false
+      ;(async () => {
+        try {
+          const bps = await measureUploadSpeed(3000, 64 * 1024)
+          if (!cancelled && bps > 0) {
+            saveUploadSpeed(bps)
+            log("[NetSpeed] Measured initial upload speed", { bps })
+          }
+        } catch (e) {
+          // Log but don’t surface to user
+          const msg = e instanceof Error ? e.message : String(e)
+          console.warn('[NetSpeed] Initial speed test failed', msg)
+        }
+      })()
+      return () => {
+        cancelled = true
+      }
+    }
   }, []) // Run only once on mount
 
   // Sync WebSocket session updates with pendingUploads
@@ -483,13 +534,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             })
 
             // Only show toast if just completed (within last 10s) and not yet shown
-            if (!completionToastsShown.current.has(job.job_id)) {
-              const completedMs = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
-              if (Date.now() - completedMs <= 10_000) {
-                completionToastsShown.current.add(job.job_id)
-                toast.success(`Conversion completed for ${job.filename}`)
-              }
-            }
+            // Suppress completion toast
 
             // Also show a completed card in the queue UI
             return [...prev, newUpload]
@@ -523,10 +568,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
               // Reset stage progress between phases to avoid backwards movement
               if (job.status === "QUEUED" || job.status === "PROCESSING") {
-                setConversionProgress(0)
+                // </CHANGE> Removed conversionProgress and eta/remainingTime resets
+                // They are now handled within handleConvert and the job status updates
                 lastLoggedProgressRef.current = -1
-                setEta(undefined)
-                setRemainingTime(undefined)
               }
             }
 
@@ -568,13 +612,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               })
 
               // Only show toast if just completed (within last 10s) and not yet shown
-              if (!completionToastsShown.current.has(job.job_id)) {
-                const completedMs = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
-                if (Date.now() - completedMs <= 10_000) {
-                  completionToastsShown.current.add(job.job_id)
-                  toast.success(`Conversion completed for ${job.filename}`)
-                }
-              }
+              // Suppress completion toast
             }
 
             return updated
@@ -651,10 +689,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
             // Reset stage progress between phases
             if (statusData.status === "QUEUED" || statusData.status === "PROCESSING") {
-              setConversionProgress(0)
+              // </CHANGE> Removed conversionProgress and eta/remainingTime resets
+              // They are now handled within handleConvert and the job status updates
               lastLoggedProgressRef.current = -1
-              setEta(undefined)
-              setRemainingTime(undefined)
             }
           }
 
@@ -703,13 +740,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             })
 
             // Only show toast if just completed (within last 10s) and not yet shown
-            if (!completionToastsShown.current.has(jobId)) {
-              const completedMs = statusData.completed_at ? new Date(statusData.completed_at).getTime() : Date.now()
-              if (Date.now() - completedMs <= 10_000) {
-                completionToastsShown.current.add(jobId)
-                toast.success(`Conversion completed for ${f.name}`)
-              }
-            }
+            // Suppress completion toast
           }
 
           return updated
@@ -1039,12 +1070,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     setIsConverting(true)
 
     // Reset all progress states at the start of conversion
-    setUploadProgress(0)
-    setUploadProgressConfirmed(0)
-    setConversionProgress(0)
-    setIsUploaded(false)
-    setEta(undefined)
-    setRemainingTime(undefined)
+    // </CHANGE> Removed shared progress states, now handled per job
+    // setUploadProgress(0)
+    // setUploadProgressConfirmed(0)
+    // setConversionProgress(0)
+    // setIsUploaded(false)
+    // setEta(undefined)
+    // setRemainingTime(undefined)
     setCurrentStatus(undefined)
     maxUploadProgressRef.current = 0 // Reset max upload progress
 
@@ -1062,21 +1094,20 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         return // Return early in map, equivalent to continue in for loop
       }
 
-      const toastId = toast.loading(`Converting ${currentFile.name}... (${i + 1}/${filesToProcess.length})`, {
-        duration: Number.POSITIVE_INFINITY,
-      })
+      // Removed loading toast during conversion
 
       try {
         // Do not force-refresh session; forcing breaks WebSocket session subscription rooms
         const sessionKey = await ensureSessionKey()
 
         // Reset progress states for this file
-        setUploadProgress(0)
-        setUploadProgressConfirmed(0)
-        setIsUploaded(false)
-        setConversionProgress(0)
-        setEta(undefined)
-        setRemainingTime(undefined)
+        // </CHANGE> Removed shared progress states, now handled per job
+        // setUploadProgress(0)
+        // setUploadProgressConfirmed(0)
+        // setIsUploaded(false)
+        // setConversionProgress(0)
+        // setEta(undefined)
+        // setRemainingTime(undefined)
         setCurrentStatus(undefined) // Will be set by first status poll
         lastLoggedProgressRef.current = -1 // Reset progress logging
         maxUploadProgressRef.current = 0 // Reset max upload progress for this file
@@ -1111,7 +1142,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         }
 
         // Set initial upload state immediately (prevents "ready" flash before upload starts)
-        setUploadProgress(0)
+        // </CHANGE> Removed shared progress states, now handled per job
+        // setUploadProgress(0)
         maxUploadProgressRef.current = 0
         setCurrentStatus("UPLOADING")
 
@@ -1125,16 +1157,35 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
             convertAdvancedOptionsToBackend(fileAdvancedOptions), // Use per-file advanced options
             // Upload progress callback for real-time UI updates
             (progress, fullProgressData) => {
-              if (progress >= maxUploadProgressRef.current) {
-                maxUploadProgressRef.current = progress
-                setUploadProgress(progress)
-              }
-
-              // Calculate confirmed progress (only backend-confirmed parts)
-              if (fullProgressData) {
-                const confirmedProgress = (fullProgressData.completedParts / fullProgressData.totalParts) * 100
-                setUploadProgressConfirmed(confirmedProgress)
-              }
+              // Update per-file upload progress for UI display with full data for ETA calculation
+              setPendingUploads((prev) =>
+                prev.map((f) =>
+                  f.jobId === jobId // Use jobId here to find the correct file
+                    ? {
+                        ...f,
+                        upload_progress: fullProgressData
+                          ? {
+                              ...fullProgressData,
+                              // Provide a confirmed_percentage for UI dual-layer bar
+                              confirmed_percentage:
+                                fullProgressData.totalParts && fullProgressData.totalParts > 0
+                                  ? (fullProgressData.completedParts / fullProgressData.totalParts) * 100
+                                  : undefined,
+                              percentage: progress,
+                              total_bytes: currentFile.size,
+                            }
+                          : {
+                              completed_parts: 0,
+                              total_parts: 0,
+                              uploaded_bytes: 0,
+                              total_bytes: currentFile.size,
+                              percentage: progress,
+                              confirmed_percentage: undefined,
+                            },
+                      }
+                    : f,
+                ),
+              )
 
               // Log upload progress at 10% intervals (0%, 10%, 20%, ..., 100%)
               const currentPercent = Math.floor(progress)
@@ -1151,28 +1202,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 })
               }
 
-              // Update per-file upload progress for UI display with full data for ETA calculation
-              setPendingUploads((prev) =>
-                prev.map((f) =>
-                  f === currentFile
-                    ? {
-                        ...f,
-                        upload_progress: fullProgressData || {
-                          completed_parts: 0,
-                          total_parts: 0,
-                          uploaded_bytes: 0,
-                          total_bytes: currentFile.size,
-                          percentage: progress,
-                        },
-                      }
-                    : f,
-                ),
-              )
-
-              // </CHANGE> Send upload progress via WebSocket if job ID is available
-              if (jobId && fullProgressData?.uploadedBytes !== undefined) {
-                wsSendUploadProgress(jobId, fullProgressData.uploadedBytes)
-              }
+              // Stop client-driven WebSocket upload_progress emissions to reduce broadcast spam.
+              // We rely on backend part confirmations and status transitions for WS updates.
 
               // Mark as uploaded when progress reaches 100%
               if (progress >= 100) {
@@ -1266,21 +1297,21 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         // Session-based WebSocket updates (subscribe_session) will update status post-finalize
         // No per-job subscribe needed; avoids early DB lookup race conditions
 
-        // Remove the loading toast without showing an "upload complete" message
-        toast.dismiss(toastId)
+        // No loading toast to dismiss
 
         log("File uploaded successfully; session updates will track conversion", jobId, {
           filename: currentFile.name,
         })
 
-        // Reset progress states for next file
-        setUploadProgress(0)
-        setUploadProgressConfirmed(0)
-        setConversionProgress(0)
-        setIsUploaded(false)
-        setEta(undefined)
-        setRemainingTime(undefined)
-        setCurrentStatus(undefined)
+        // Reset all progress states for next file
+        // </CHANGE> Removed shared progress states, now handled per job
+        // setUploadProgress(0)
+        // setUploadProgressConfirmed(0)
+        // setConversionProgress(0)
+        // setIsUploaded(false)
+        // setEta(undefined)
+        // setRemainingTime(undefined)
+        // setCurrentStatus(undefined)
       } catch (error) {
         const actualErrorMessage = error instanceof Error ? error.message : String(error)
 
@@ -1294,8 +1325,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           log("[v0] Job cancelled by user, cleaning up...")
           log("Job cancelled by user", jobId, { filename: currentFile.name })
 
-          // Already removed from UI by WebSocket handler, just dismiss toast
-          toast.dismiss(toastId)
+          // Already removed from UI by WebSocket handler
           return // Exit without setting error state
         }
 
@@ -1315,7 +1345,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         )
 
         toast.error(`Conversion failed: ${currentFile.name}`, {
-          id: toastId,
           description: "Try a different file",
           duration: 8000,
         })
@@ -1328,13 +1357,14 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     log("All files processed", { totalFiles: filesToProcess.length })
 
     // Reset all progress states when conversion is complete
-    setUploadProgress(0)
-    setUploadProgressConfirmed(0)
-    setConversionProgress(0)
-    setIsUploaded(false)
-    setEta(undefined)
-    setRemainingTime(undefined)
-    setCurrentStatus(undefined)
+    // </CHANGE> Removed shared progress states, now handled per job
+    // setUploadProgress(0)
+    // setUploadProgressConfirmed(0)
+    // setConversionProgress(0)
+    // setIsUploaded(false)
+    // setEta(undefined)
+    // setRemainingTime(undefined)
+    // setCurrentStatus(undefined)
     setIsConverting(false)
   }
 
@@ -1382,12 +1412,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     // Reset conversion state if this was the active job
     if (wasActiveJob) {
       setIsConverting(false)
-      setUploadProgress(0)
-      setUploadProgressConfirmed(0)
-      setConversionProgress(0)
-      setEta(undefined)
-      setRemainingTime(undefined)
-      setCurrentStatus(undefined)
+      // </CHANGE> Removed shared progress states, now handled per job
+      // setUploadProgress(0)
+      // setUploadProgressConfirmed(0)
+      // setConversionProgress(0)
+      // setEta(undefined)
+      // setRemainingTime(undefined)
+      // setCurrentStatus(undefined)
     }
 
     // IMMEDIATELY remove from UI - don't wait for backend
@@ -1724,12 +1755,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                   onDismissJob={handleDismissJob}
                   dismissingJobs={dismissingJobs}
                   cancellingJobs={cancellingJobs}
-                  uploadProgress={uploadProgress}
-                  uploadProgressConfirmed={uploadProgressConfirmed}
-                  conversionProgress={conversionProgress}
                   isUploaded={isUploaded}
-                  eta={eta}
-                  remainingTime={remainingTime}
                   currentStatus={currentStatus}
                   deviceProfiles={DEVICE_PROFILES}
                   onAddMoreFiles={handleAddMoreFiles}

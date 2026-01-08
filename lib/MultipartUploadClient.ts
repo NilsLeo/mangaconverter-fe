@@ -5,6 +5,7 @@ interface MultipartUploadConfig {
   maxConcurrentParts?: number
   retryAttempts?: number
   retryDelay?: number
+  uploadTimeoutMs?: number
 }
 
 interface UploadPart {
@@ -48,6 +49,7 @@ export class MultipartUploadClient {
       maxConcurrentParts: config.maxConcurrentParts || envMaxConcurrent || 6, // Env var > config > default (6)
       retryAttempts: config.retryAttempts || 3,
       retryDelay: config.retryDelay || 1000,
+      uploadTimeoutMs: config.uploadTimeoutMs || 60000,
     }
 
     log("[MULTIPART] Client initialized", {
@@ -659,7 +661,7 @@ export class MultipartUploadClient {
 
           // Set timeout to prevent stuck uploads (Hetzner S3 timeout is ~60-80s)
           // We set it to 60s to fail faster and retry with fresh connection
-          xhr.timeout = 60000  // 60 seconds
+          xhr.timeout = Math.max(10000, this.config.uploadTimeoutMs)  // configurable, min 10s
 
           let lastProgressTime = Date.now()
           let lastProgressBytes = 0

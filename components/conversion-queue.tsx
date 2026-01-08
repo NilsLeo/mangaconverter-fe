@@ -20,12 +20,12 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { motion } from "framer-motion"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import type { PendingUpload, AdvancedOptionsType } from "./manga-converter"
 import { fetchWithLicense } from "@/lib/utils"
 import { log, logError } from "@/lib/logger"
 import { toast } from "sonner"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+// Removed Tooltip usage on queue action buttons to avoid ref update loop
 
 const QUEUED_SECONDS = Number.parseInt(process.env.NEXT_PUBLIC_QUEUED_SECONDS || "5", 10)
 
@@ -42,12 +42,7 @@ interface ConversionQueueProps {
   onDismissJob?: (file: PendingUpload) => void
   dismissingJobs?: Set<string>
   cancellingJobs?: Set<string>
-  uploadProgress?: number
-  uploadProgressConfirmed?: number
-  conversionProgress?: number
   isUploaded?: boolean
-  eta?: number
-  remainingTime?: number
   currentStatus?: string
   deviceProfiles?: Record<string, string>
   onAddMoreFiles?: () => void
@@ -70,12 +65,7 @@ export function ConversionQueue({
   showAsUploadedFiles = false,
   onRemoveFile,
   onDismissJob,
-  uploadProgress = 0,
-  uploadProgressConfirmed = 0,
-  conversionProgress = 0,
   isUploaded = false,
-  eta,
-  remainingTime,
   currentStatus,
   deviceProfiles = {},
   onAddMoreFiles,
@@ -84,8 +74,23 @@ export function ConversionQueue({
   onStartConversion,
   isReadyToConvert,
 }: ConversionQueueProps) {
-  const [items, setItems] = useState(pendingUploads)
+  // Items are now directly used from pendingUploads prop instead of maintaining duplicate state
+  const items = pendingUploads
+
+  // Render tooltips only after mount to avoid dev ref/hydration loops
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
   const [downloadingFiles, setDownloadingFiles] = useState<Record<string, boolean>>({})
+  const [jobUploadEtas, setJobUploadEtas] = useState<Map<string, number>>(new Map())
+  const [jobUploadSpeeds, setJobUploadSpeeds] = useState<Map<string, number>>(new Map())
+  const [jobSpeedHistories, setJobSpeedHistories] = useState<Map<string, number[]>>(new Map())
+  const [jobLastSpeedEmit, setJobLastSpeedEmit] = useState<Map<string, number>>(new Map())
+  const [jobUploadStartTimes, setJobUploadStartTimes] = useState<Map<string, number>>(new Map())
+  const [jobLastUploadProgress, setJobLastUploadProgress] = useState<Map<string, number>>(new Map())
+  const [jobLastUploadTime, setJobLastUploadTime] = useState<Map<string, number>>(new Map())
   // PROCESSING ETA comes from backend; no local countdown
   const [uploadEta, setUploadEta] = useState<number | undefined>(undefined)
   const [displayedUploadRemainingSec, setDisplayedUploadRemainingSec] = useState<number | null>(null)
@@ -98,7 +103,16 @@ export function ConversionQueue({
   const uploadJobIdRef = useRef<string>("unknown")
   const lastLoggedUploadRemainingRef = useRef<number | null>(null)
 
-  // Client-side PROCESSING ticker (based on backend-provided ETA at start)
+  const SPEED_EMIT_INTERVAL_MS = 5000
+  const SPEED_MEDIAN_WINDOW = Number.parseInt(process.env.NEXT_PUBLIC_UPLOAD_SPEED_WINDOW || "8", 10)
+  const median = (arr: number[]) => {
+    if (arr.length === 0) return 0
+    const sorted = [...arr].sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+  }
+
+  // Client-side PROCESSING<bos> ticker (based on backend-provided ETA at start)
   const [processingStartTime, setProcessingStartTime] = useState<number | null>(null)
   const [processingEtaSec, setProcessingEtaSec] = useState<number | null>(null)
   const [clientProcessingProgress, setClientProcessingProgress] = useState<number>(0)
@@ -119,11 +133,12 @@ export function ConversionQueue({
   // Refs to track last logged progress percentage for each job stage (to log only at 10% intervals)
   // No queued/progress logs: handled by backend
 
-  useEffect(() => {
-    if (JSON.stringify(items) !== JSON.stringify(pendingUploads)) {
-      setItems(pendingUploads)
-    }
-  }, [pendingUploads])
+  // Removed useEffect for items state synchronization:
+  // useEffect(() => {
+  //   if (JSON.stringify(items) !== JSON.stringify(pendingUploads)) {
+  //     setItems(pendingUploads)
+  //   }
+  // }, [pendingUploads])
 
   // No QUEUED ETA: we intentionally do not compute or display ETA while QUEUED
 
@@ -138,29 +153,28 @@ export function ConversionQueue({
     const processingFile = pendingUploads.find((f) => f.status === "PROCESSING" && f.processing_progress)
     const pp = processingFile?.processing_progress
     if (pp?.projected_eta && pp.projected_eta > 0) {
-      const baseElapsed = pp.elapsed_seconds ?? 0
-      const startMs = Date.now() - baseElapsed * 1000
-      setProcessingStartTime(startMs)
-      setProcessingEtaSec(pp.projected_eta)
-      // Start from backend-progress if provided
-      const initialProgress =
-        pp.progress_percent != null
-          ? Math.floor(Math.max(0, Math.min(99, pp.progress_percent)))
-          : Math.floor(Math.max(0, Math.min(99, (baseElapsed / pp.projected_eta) * 100)))
-      setClientProcessingProgress(initialProgress)
-      const initialRemaining =
-        pp.remaining_seconds != null ? pp.remaining_seconds : Math.max(0, Math.ceil(pp.projected_eta - baseElapsed))
-      setDisplayedRemainingSec(initialRemaining)
-      // Track job id for logging
-      const jId = (processingFile as any)?.jobId || (processingFile as any)?.job_id
-      if (jId) {
-        processingJobIdRef.current = jId
-      } else {
-        processingJobIdRef.current = "unknown"
+      // Initialize only once per processing phase to avoid Date.now()-driven loops
+      if (processingStartTime == null) {
+        const baseElapsed = pp.elapsed_seconds ?? 0
+        const startMs = Date.now() - baseElapsed * 1000
+        setProcessingStartTime(startMs)
+        setProcessingEtaSec(pp.projected_eta)
+        // Start from backend-progress if provided
+        const initialProgress =
+          pp.progress_percent != null
+            ? Math.floor(Math.max(0, Math.min(99, pp.progress_percent)))
+            : Math.floor(Math.max(0, Math.min(99, (baseElapsed / pp.projected_eta) * 100)))
+        setClientProcessingProgress(initialProgress)
+        const initialRemaining =
+          pp.remaining_seconds != null ? pp.remaining_seconds : Math.max(0, Math.ceil(pp.projected_eta - baseElapsed))
+        setDisplayedRemainingSec(initialRemaining)
+        // Track job id for logging
+        const jId = (processingFile as any)?.jobId || (processingFile as any)?.job_id
+        processingJobIdRef.current = jId || "unknown"
+        // Reset logging refs when (re)initializing ticker
+        lastLoggedProcessingTenthRef.current = null
+        lastLoggedRemainingSecRef.current = null
       }
-      // Reset logging refs when (re)initializing ticker
-      lastLoggedProcessingTenthRef.current = null
-      lastLoggedRemainingSecRef.current = null
     } else {
       setProcessingStartTime(null)
       setProcessingEtaSec(null)
@@ -170,24 +184,26 @@ export function ConversionQueue({
       lastLoggedProcessingTenthRef.current = null
       lastLoggedRemainingSecRef.current = null
     }
-  }, [pendingUploads])
+  }, [pendingUploads, processingStartTime])
 
   // Initialize QUEUED ticker with static duration from env
   useEffect(() => {
     const queuedFile = pendingUploads.find((f) => f.status === "QUEUED")
     if (queuedFile) {
-      const start = queuedFile.queuedAt || Date.now()
-      setQueuedStartTime(start)
-      setQueuedDurationSec(QUEUED_SECONDS)
-      const elapsed = Math.max(0, (Date.now() - start) / 1000)
-      const initialProgress = Math.floor(Math.max(0, Math.min(99, (elapsed / QUEUED_SECONDS) * 100)))
-      setClientQueuedProgress(initialProgress)
-      const initialRemaining = Math.max(0, Math.ceil(QUEUED_SECONDS - elapsed))
-      setDisplayedQueuedRemainingSec(initialRemaining)
-      const jId = (queuedFile as any)?.jobId || (queuedFile as any)?.job_id
-      queuedJobIdRef.current = jId || "unknown"
-      lastLoggedQueuedTenthRef.current = null
-      lastLoggedQueuedRemainingRef.current = null
+      if (queuedStartTime == null) {
+        const start = queuedFile.queuedAt || Date.now()
+        setQueuedStartTime(start)
+        setQueuedDurationSec(QUEUED_SECONDS)
+        const elapsed = Math.max(0, (Date.now() - start) / 1000)
+        const initialProgress = Math.floor(Math.max(0, Math.min(99, (elapsed / QUEUED_SECONDS) * 100)))
+        setClientQueuedProgress(initialProgress)
+        const initialRemaining = Math.max(0, Math.ceil(QUEUED_SECONDS - elapsed))
+        setDisplayedQueuedRemainingSec(initialRemaining)
+        const jId = (queuedFile as any)?.jobId || (queuedFile as any)?.job_id
+        queuedJobIdRef.current = jId || "unknown"
+        lastLoggedQueuedTenthRef.current = null
+        lastLoggedQueuedRemainingRef.current = null
+      }
     } else {
       setQueuedStartTime(null)
       setClientQueuedProgress(0)
@@ -196,7 +212,7 @@ export function ConversionQueue({
       lastLoggedQueuedTenthRef.current = null
       lastLoggedQueuedRemainingRef.current = null
     }
-  }, [pendingUploads])
+  }, [pendingUploads, queuedStartTime])
 
   // QUEUED progress ticker: 1% every (duration/100) seconds
   useEffect(() => {
@@ -334,67 +350,67 @@ export function ConversionQueue({
     const uploadingFile = pendingUploads.find((f) => f.status === "UPLOADING")
     const isUploading = currentStatus === "UPLOADING" || uploadingFile !== undefined
 
-    if (isUploading && uploadProgress !== undefined && uploadProgress >= 0) {
+    if (
+      isUploading &&
+      uploadingFile?.upload_progress?.percentage !== undefined &&
+      uploadingFile?.upload_progress?.percentage >= 0
+    ) {
       const now = Date.now()
+      const jobId = uploadingFile.jobId || uploadingFile.job_id || "unknown"
+      const fileSize = uploadingFile.size
+      const uploadedBytes =
+        uploadingFile.upload_progress.uploaded_bytes || (uploadingFile.upload_progress.percentage / 100) * fileSize
+      const currentProgress = uploadingFile.upload_progress.percentage
 
-      // Initialize upload start time on first progress update
-      if (uploadStartTime === 0) {
-        setUploadStartTime(now)
-        setLastUploadProgress(uploadProgress)
-        setLastUploadTime(now)
-        setLastEtaUpdateTime(now)
-        setSpeedSampleCount(0)
-
-        // Capture job id for logging
-        const jId = (uploadingFile as any)?.jobId || (uploadingFile as any)?.job_id
-        uploadJobIdRef.current = jId || "unknown"
+      // Initialize upload start time and progress tracking for this job
+      if (!jobUploadStartTimes.has(jobId) || jobUploadStartTimes.get(jobId) === 0) {
+        setJobUploadStartTimes((prev) => new Map(prev).set(jobId, now))
+        setJobLastUploadProgress((prev) => new Map(prev).set(jobId, currentProgress))
+        setJobLastUploadTime((prev) => new Map(prev).set(jobId, now))
+        // Resetting global trackers too for consistency if this is the primary uploader
+        if (uploadingFile === pendingUploads[0]) {
+          setUploadStartTime(now)
+          setLastUploadProgress(currentProgress)
+          setLastUploadTime(now)
+          setSpeedSampleCount(0)
+        }
         return
       }
 
-      // Get current file being uploaded
-      const currentFile = uploadingFile || pendingUploads.find((f) => f.status === "UPLOADING")
-      if (!currentFile || !currentFile.size) {
-        return
-      }
-
-      const fileSize = currentFile.size
-      // Use actual uploaded bytes from progress data if available, otherwise calculate from percentage
-      const uploadedBytes = currentFile.upload_progress?.uploaded_bytes || (uploadProgress / 100) * fileSize
-      const progressDelta = uploadProgress - lastUploadProgress
-      const timeDelta = (now - lastUploadTime) / 1000 // Convert to seconds
-      const etaTimeDelta = (now - lastEtaUpdateTime) / 1000 // Time since last ETA update
+      const lastProgress = jobLastUploadProgress.get(jobId) || 0
+      const lastTime = jobLastUploadTime.get(jobId) || now
+      const progressDelta = currentProgress - lastProgress
+      const timeDelta = (now - lastTime) / 1000 // Convert to seconds
 
       // Only update if we have meaningful progress (avoid noise from rapid updates)
       if (progressDelta > 0.1 && timeDelta > 0.2) {
         // Calculate instantaneous speed (bytes uploaded in this interval / time elapsed)
-        const bytesDelta = currentFile.upload_progress?.uploaded_bytes
-          ? uploadedBytes - (lastUploadProgress / 100) * fileSize
-          : (progressDelta / 100) * fileSize
+        const bytesDelta = uploadedBytes - (lastProgress / 100) * fileSize
         const instantSpeed = bytesDelta / timeDelta
 
-        const smoothingFactor = speedSampleCount < 5 ? 0.15 : 0.25 // More smoothing initially
-        const smoothedSpeed =
-          uploadSpeed === 0 ? instantSpeed : smoothingFactor * instantSpeed + (1 - smoothingFactor) * uploadSpeed
+        // Use job-specific speed, fallback to global if necessary
+        // Accumulate instantaneous speed measurements for median calculation
+        setJobSpeedHistories((prev) => {
+          const next = new Map(prev)
+          const arr = next.get(jobId) ? [...(next.get(jobId) as number[])] : []
+          arr.push(instantSpeed)
+          while (arr.length > SPEED_MEDIAN_WINDOW) arr.shift()
+          next.set(jobId, arr)
+          return next
+        })
+        setJobLastUploadProgress((prev) => new Map(prev).set(jobId, currentProgress))
+        setJobLastUploadTime((prev) => new Map(prev).set(jobId, now))
 
-        setUploadSpeed(smoothedSpeed)
-        setLastUploadProgress(uploadProgress)
-        setLastUploadTime(now)
-        setSpeedSampleCount((prev) => prev + 1)
-
-        // Require at least 3 samples before showing ETA to users
-        if (speedSampleCount >= 3 && etaTimeDelta >= 10) {
-          // Calculate remaining bytes and ETA
-          const remainingBytes = fileSize - uploadedBytes
-          const estimatedSeconds = smoothedSpeed > 0 ? remainingBytes / smoothedSpeed : 0
-
-          // Ignore estimates over 1 hour as they're likely inaccurate
-          if (estimatedSeconds > 0 && estimatedSeconds < 3600) {
-            setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
-            setLastEtaUpdateTime(now)
-            // Also refresh displayed countdown to match latest estimate
-            setDisplayedUploadRemainingSec(Math.max(1, Math.round(estimatedSeconds)))
-          }
+        // Also update global trackers if this is the primary uploader
+        if (uploadingFile === pendingUploads[0]) {
+          // Keep a rough instantaneous reading internally; UI uses median/5s cadence
+          setUploadSpeed(instantSpeed)
+          setLastUploadProgress(currentProgress)
+          setLastUploadTime(now)
+          setSpeedSampleCount((prev) => prev + 1)
         }
+
+        // Speed and ETA publication handled by 5s cadence below
       }
     } else if (!isUploading) {
       // Reset upload tracking when not uploading
@@ -403,19 +419,13 @@ export function ConversionQueue({
       setUploadEta(undefined)
       setDisplayedUploadRemainingSec(null)
       setSpeedSampleCount(0)
+      setJobUploadEtas(new Map())
+      setJobUploadSpeeds(new Map())
+      setJobUploadStartTimes(new Map())
+      setJobLastUploadProgress(new Map())
+      setJobLastUploadTime(new Map())
     }
-  }, [
-    uploadProgress,
-    currentStatus,
-    pendingUploads,
-    speedSampleCount,
-    uploadEta,
-    uploadSpeed,
-    uploadStartTime,
-    lastUploadProgress,
-    lastUploadTime,
-    lastEtaUpdateTime,
-  ])
+  }, [pendingUploads, currentStatus])
 
   // Keep displayed upload ETA in sync when a fresh estimate arrives
   useEffect(() => {
@@ -436,7 +446,7 @@ export function ConversionQueue({
           // Log each decrement
           if (lastLoggedUploadRemainingRef.current == null || next !== lastLoggedUploadRemainingRef.current) {
             lastLoggedUploadRemainingRef.current = next
-            const jobId = uploadJobIdRef.current
+            const jobId = uploadJobIdRef.current // Use global ref for now
             log(`[UI] Upload ETA tick: ${next}s remaining`, {
               remaining_seconds: next,
               job_id: jobId,
@@ -447,7 +457,97 @@ export function ConversionQueue({
       }, 1000)
       return () => clearInterval(interval)
     }
-  }, [currentStatus, pendingUploads, displayedUploadRemainingSec])
+  }, [currentStatus, pendingUploads])
+
+  useEffect(() => {
+    const now = Date.now()
+
+    pendingUploads.forEach((file) => {
+      const jobId = file.jobId || ""
+      const uploadProgress = file.upload_progress?.percentage || 0
+      const uploadedBytes = file.upload_progress?.uploaded_bytes || 0
+      const totalBytes = file.upload_progress?.total_bytes || file.size
+
+      // Initialize tracking for new uploads
+      if (uploadProgress === 0 && !jobUploadStartTimes.has(jobId)) {
+        setJobUploadStartTimes((prev) => new Map(prev).set(jobId, now))
+        setJobLastUploadProgress((prev) => new Map(prev).set(jobId, 0))
+        setJobLastUploadTime((prev) => new Map(prev).set(jobId, now))
+        setJobLastSpeedEmit((prev) => new Map(prev).set(jobId, 0))
+        setJobSpeedHistories((prev) => new Map(prev).set(jobId, []))
+        return
+      }
+
+      // Calculate instantaneous speed when progress changes
+      const lastProgress = jobLastUploadProgress.get(jobId) || 0
+      const lastTime = jobLastUploadTime.get(jobId) || now
+
+      if (uploadProgress > lastProgress && uploadProgress < 100) {
+        const timeDiff = (now - lastTime) / 1000 // seconds
+        const progressDiff = uploadProgress - lastProgress
+
+        if (timeDiff > 0 && progressDiff > 0) {
+          const bytesUploaded = (progressDiff / 100) * totalBytes
+          const instSpeed = bytesUploaded / timeDiff
+
+          // Append sample to history
+          setJobSpeedHistories((prev) => {
+            const next = new Map(prev)
+            const arr = next.get(jobId) ? [...(next.get(jobId) as number[])] : []
+            arr.push(instSpeed)
+            while (arr.length > SPEED_MEDIAN_WINDOW) arr.shift()
+            next.set(jobId, arr)
+            return next
+          })
+
+          // Update last progress/time
+          setJobLastUploadProgress((prev) => new Map(prev).set(jobId, uploadProgress))
+          setJobLastUploadTime((prev) => new Map(prev).set(jobId, now))
+
+          // Publish every 5s using median of recent samples
+          const lastEmit = jobLastSpeedEmit.get(jobId) || 0
+          if (now - lastEmit >= SPEED_EMIT_INTERVAL_MS) {
+            const hist = jobSpeedHistories.get(jobId) || []
+            const med = median(hist)
+            setJobUploadSpeeds((prev) => new Map(prev).set(jobId, med))
+
+            const remainingBytes = totalBytes - uploadedBytes
+            const etaSeconds = med > 0 ? remainingBytes / med : 0
+            if (etaSeconds > 0 && etaSeconds < 3600) {
+              setJobUploadEtas((prev) => new Map(prev).set(jobId, Math.ceil(etaSeconds)))
+            }
+
+            setJobLastSpeedEmit((prev) => new Map(prev).set(jobId, now))
+
+            // Persist latest median upload speed for dynamic part sizing in future uploads
+            try {
+              if (med > 0) {
+                localStorage.setItem('upload_speed_bps', String(Math.floor(med)))
+              }
+            } catch {}
+          }
+        }
+      }
+    })
+  }, [pendingUploads, jobLastSpeedEmit, jobSpeedHistories])
+
+  const getJobUploadInfo = useCallback(
+    (file: PendingUpload) => {
+      const jobId = file.jobId || ""
+      const uploadProgress = file.upload_progress?.percentage || 0
+      const uploadProgressConfirmed = (file.upload_progress as any)?.confirmed_percentage || uploadProgress
+      const eta = jobUploadEtas.get(jobId)
+      const speed = jobUploadSpeeds.get(jobId) || 0
+
+      return {
+        uploadProgress,
+        uploadProgressConfirmed,
+        eta,
+        speed,
+      }
+    },
+    [jobUploadEtas, jobUploadSpeeds],
+  )
 
   const isJobRunning = (file: PendingUpload) => {
     return file.status === "UPLOADING" || file.status === "QUEUED" || file.status === "PROCESSING"
@@ -641,17 +741,19 @@ export function ConversionQueue({
     if (status === "UPLOADING") {
       // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
       // The backend's percentage is based on completed parts only, which lags behind actual upload progress
-      const uploadPct = uploadProgress || Number.parseFloat(file.upload_progress?.percentage) || 0
-      const safeUploadPct = Math.max(0, Math.min(100, uploadPct))
+      const uploadPct = file.upload_progress?.percentage || 0 // Use per-file upload progress
+      const safeUploadPct = Math.min(100, uploadPct) // Only enforce maximum, allow 0%
       let label = `Uploading - ${Math.round(safeUploadPct)}%`
-      if (uploadSpeed > 0) {
-        label += ` (@${formatUploadSpeed(uploadSpeed)})`
+      const currentJobSpeed = jobUploadSpeeds.get(file.jobId || file.job_id || "") || 0
+      if (currentJobSpeed > 0) {
+        label += ` (@${formatUploadSpeed(currentJobSpeed)})`
       }
+      const currentJobEta = jobUploadEtas.get(file.jobId || file.job_id || "")
       return {
         stage: 0,
         progress: safeUploadPct,
         label,
-        eta: displayedUploadRemainingSec ?? uploadEta,
+        eta: currentJobEta ?? null,
         isError: false,
       }
     }
@@ -797,7 +899,7 @@ export function ConversionQueue({
             <div className="space-y-2">
               <div className="relative h-2 bg-muted rounded-full overflow-hidden">
                 {/* Upload stage: show dual layers for sent/received */}
-                {stage === 0 && currentStatus === "UPLOADING" ? (
+                {stage === 0 && file.status === "UPLOADING" ? (
                   <>
                     {/* Light layer: total sent */}
                     <div
@@ -805,12 +907,16 @@ export function ConversionQueue({
                       style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                     />
                     {/* Dark layer: confirmed received */}
-                    {uploadProgressConfirmed > 0 && (
-                      <div
-                        className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
-                      />
-                    )}
+                    {(() => {
+                      const confirmed =
+                        (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
+                      return confirmed !== undefined && confirmed > 0 ? (
+                        <div
+                          className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, confirmed)}%` }}
+                        />
+                      ) : null
+                    })()}
                   </>
                 ) : (
                   <div
@@ -822,17 +928,24 @@ export function ConversionQueue({
 
               {/* Progress text */}
               <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
-                {stage === 0 && currentStatus === "UPLOADING" ? (
+                {stage === 0 && file.status === "UPLOADING" ? (
                   <>
                     <span>
                       Sent: {Math.round(currentStageProgress)}%
-                      {uploadProgressConfirmed > 0 && (
-                        <span className="ml-1.5 text-primary hidden xs:inline">
-                          · Confirmed: {Math.round(uploadProgressConfirmed)}%
-                        </span>
-                      )}
+                      {(() => {
+                        const confirmed =
+                          (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
+                        return confirmed !== undefined && confirmed > 0 ? (
+                          <span className="ml-1.5 text-primary hidden xs:inline">· Confirmed: {Math.round(confirmed)}%</span>
+                        ) : null
+                      })()}
                     </span>
-                    {uploadSpeed > 0 && <span className="hidden xs:inline">{formatUploadSpeed(uploadSpeed)}</span>}
+                    {(() => {
+                      const speed = jobUploadSpeeds.get(file.jobId || file.job_id || "") ?? 0
+                      return speed > 0 ? (
+                        <span className="hidden xs:inline">{formatUploadSpeed(speed)}</span>
+                      ) : null
+                    })()}
                   </>
                 ) : (
                   <>
@@ -925,7 +1038,7 @@ export function ConversionQueue({
                 <div className="mt-4 mx-5">
                   <div className="relative h-2 md:h-1.5 bg-muted rounded-full overflow-hidden">
                     {/* Upload stage: show dual layers for sent/received */}
-                    {stage === 0 && currentStatus === "UPLOADING" ? (
+                    {stage === 0 && file.status === "UPLOADING" ? (
                       <>
                         {/* Light layer: sent bytes */}
                         <div
@@ -933,12 +1046,16 @@ export function ConversionQueue({
                           style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                         />
                         {/* Dark layer: confirmed received */}
-                        {uploadProgressConfirmed > 0 && (
-                          <div
-                            className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
-                            style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
-                          />
-                        )}
+                        {(() => {
+                          const confirmed =
+                            (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
+                          return confirmed !== undefined && confirmed > 0 ? (
+                            <div
+                              className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                              style={{ width: `${Math.min(100, confirmed)}%` }}
+                            />
+                          ) : null
+                        })()}
                       </>
                     ) : (
                       <div
@@ -948,17 +1065,24 @@ export function ConversionQueue({
                     )}
                   </div>
                   <div className="flex items-center justify-between mt-1.5 text-[11px] md:text-[10px] text-muted-foreground">
-                    {stage === 0 && currentStatus === "UPLOADING" ? (
+                    {stage === 0 && file.status === "UPLOADING" ? (
                       <>
                         <span>
                           Sent: {Math.round(currentStageProgress)}%
-                          {uploadProgressConfirmed > 0 && (
-                            <span className="ml-2 text-primary">
-                              · Confirmed: {Math.round(uploadProgressConfirmed)}%
-                            </span>
-                          )}
+                          {(() => {
+                            const confirmed =
+                              (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
+                            return confirmed !== undefined && confirmed > 0 ? (
+                              <span className="ml-2 text-primary">· Confirmed: {Math.round(confirmed)}%</span>
+                            ) : null
+                          })()}
                         </span>
-                        {uploadSpeed > 0 && <span className="hidden sm:inline">{formatUploadSpeed(uploadSpeed)}</span>}
+                        {(() => {
+                          const speed = jobUploadSpeeds.get(file.jobId || file.job_id || "") ?? 0
+                          return speed > 0 ? (
+                            <span className="hidden sm:inline">{formatUploadSpeed(speed)}</span>
+                          ) : null
+                        })()}
                       </>
                     ) : (
                       <>
@@ -982,7 +1106,7 @@ export function ConversionQueue({
   }
 
   const getProgressInfo = (file: PendingUpload, index: number) => {
-    // Check file's own status first (from session update)
+    // Check file's own status property first (from session update)
     if (file.status === "PROCESSING") {
       if (processingStartTime && processingEtaSec) {
         return {
@@ -1002,18 +1126,18 @@ export function ConversionQueue({
     }
 
     if (file.status === "UPLOADING") {
-      // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
-      // The backend's percentage is based on completed parts only, which lags behind actual upload progress
-      const percentage =
-        uploadProgress || (file.upload_progress ? Number.parseFloat(file.upload_progress.percentage) : 0)
+      // Use per-file upload progress
+      const percentage = file.upload_progress?.percentage ?? 0
       const safePercentage = Math.max(0, Math.min(100, percentage))
       let uploadLabel = `Uploading - ${Math.round(safePercentage)}%`
 
-      // Add ETA with speed in parentheses (same as global upload progress)
-      if (uploadSpeed > 0 && uploadEta) {
-        uploadLabel += ` • ${formatTime(uploadEta)} remaining (@${formatUploadSpeed(uploadSpeed)})`
-      } else if (uploadSpeed > 0) {
-        uploadLabel += ` (@${formatUploadSpeed(uploadSpeed)})`
+      const { uploadProgressConfirmed, eta, speed } = getJobUploadInfo(file)
+
+      // Add ETA with speed in parentheses
+      if (speed > 0 && eta) {
+        uploadLabel += ` • ${formatTime(eta)} remaining (@${formatUploadSpeed(speed)})`
+      } else if (speed > 0) {
+        uploadLabel += ` (@${formatUploadSpeed(speed)})`
       }
 
       return {
@@ -1040,7 +1164,8 @@ export function ConversionQueue({
 
     switch (currentStatus) {
       case "UPLOADING":
-        const safeUploadProgress = Math.max(0, Math.min(100, uploadProgress || 0))
+        // The uploadProgress variable was undeclared. Use file.upload_progress?.percentage instead.
+        const safeUploadProgress = Math.max(0, Math.min(100, file.upload_progress?.percentage ?? 0)) // Fallback to global if per-file isn't ready
 
         let uploadLabel = `Uploading - ${Math.round(safeUploadProgress)}%`
 
@@ -1119,7 +1244,7 @@ export function ConversionQueue({
 
         return (
           <motion.div
-            key={file.name + index}
+            key={file.jobId ?? `${file.name}-${file.size}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.05 }}
@@ -1225,91 +1350,70 @@ export function ConversionQueue({
 
                         if (file.error) {
                           return (
-                            <TooltipProvider delayDuration={0}>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => onDismissJob?.(file)}
-                                    disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
-                                    className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                  >
-                                    {file.jobId && dismissingJobs.has(file.jobId) ? (
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                      <X className="h-4 w-4" />
-                                    )}
-                                    <span className="sr-only">Dismiss</span>
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="left">
-                                  <p>Dismiss from list</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => onDismissJob?.(file)}
+                              disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
+                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                              aria-label="Dismiss from list"
+                              title="Dismiss from list"
+                            >
+                              {file.jobId && dismissingJobs.has(file.jobId) ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <X className="h-4 w-4" />
+                              )}
+                              <span className="sr-only">Dismiss</span>
+                            </Button>
                           )
                         }
 
                         if (jobRunning && onCancelJob) {
                           return (
-                            <TooltipProvider delayDuration={0}>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => {
-                                      log("[v0] Cancel button clicked for job:", file.jobId)
-                                      onCancelJob(file)
-                                    }}
-                                    disabled={isLoading}
-                                    className={`
-                                      h-9 px-3
-                                      text-muted-foreground
-                                      hover:text-destructive hover:bg-destructive/10
-                                      active:bg-destructive/20
-                                      transition-colors duration-150
-                                      ${isLoading ? "opacity-60 pointer-events-none" : ""}
-                                    `}
-                                  >
-                                    {isLoading ? (
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                      <XCircle className="h-4 w-4" />
-                                    )}
-                                    <span className="hidden sm:inline ml-1.5 text-sm font-medium">
-                                      {isLoading ? "Cancelling" : "Cancel"}
-                                    </span>
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="left" className="sm:hidden">
-                                  <p>{isLoading ? "Cancelling..." : "Cancel conversion"}</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                log("[v0] Cancel button clicked for job:", file.jobId)
+                                onCancelJob(file)
+                              }}
+                              disabled={isLoading}
+                              className={`
+                                h-9 px-3
+                                text-muted-foreground
+                                hover:text-destructive hover:bg-destructive/10
+                                active:bg-destructive/20
+                                transition-colors duration-150
+                                ${isLoading ? "opacity-60 pointer-events-none" : ""}
+                              `}
+                              aria-label={isLoading ? "Cancelling..." : "Cancel conversion"}
+                              title={isLoading ? "Cancelling..." : "Cancel conversion"}
+                            >
+                              {isLoading ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <XCircle className="h-4 w-4" />
+                              )}
+                              <span className="hidden sm:inline ml-1.5 text-sm font-medium">
+                                {isLoading ? "Cancelling" : "Cancel"}
+                              </span>
+                            </Button>
                           )
                         } else if (!isActive && !jobRunning) {
                           // Not started - Remove button
                           return (
-                            <TooltipProvider delayDuration={0}>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => onRemoveFile?.(file)}
-                                    className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                  >
-                                    <X className="h-4 w-4" />
-                                    <span className="sr-only">Remove file</span>
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="left">
-                                  <p>Remove file</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => onRemoveFile?.(file)}
+                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                              aria-label="Remove file"
+                              title="Remove file"
+                            >
+                              <X className="h-4 w-4" />
+                              <span className="sr-only">Remove file</span>
+                            </Button>
                           )
                         }
                         return null
@@ -1340,29 +1444,22 @@ export function ConversionQueue({
                           </>
                         )}
                       </Button>
-                      <TooltipProvider delayDuration={0}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => onDismissJob?.(file)}
-                              disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
-                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                            >
-                              {file.jobId && dismissingJobs.has(file.jobId) ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <X className="h-4 w-4" />
-                              )}
-                              <span className="sr-only">Dismiss</span>
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="left">
-                            <p>Dismiss from list</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => onDismissJob?.(file)}
+                        disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
+                        className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                        aria-label="Dismiss from list"
+                        title="Dismiss from list"
+                      >
+                        {file.jobId && dismissingJobs.has(file.jobId) ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <X className="h-4 w-4" />
+                        )}
+                        <span className="sr-only">Dismiss</span>
+                      </Button>
                     </div>,
                   )}
               </div>

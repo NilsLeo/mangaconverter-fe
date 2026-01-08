@@ -35,33 +35,47 @@ async function uploadFileViaMultipart(
   onProgress: (progress: number, fullProgressData?: any) => void,
   sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
 ): Promise<void> {
-  // Calculate dynamic part size to maximize parallelism while respecting minimum part size
-  // Strategy: Use 100 parts for maximum concurrency, but ensure parts are at least 1 MB
-  // S3 requires all parts (except the last) to be at least 5MB for multipart uploads
-  // Examples:
-  // - 10 MB file: 2 parts @ 5 MB each (or single upload)
-  // - 150 MB file: 30 parts @ 5 MB each
-  // - 500 MB file: 100 parts @ 5 MB each
-  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5 MB minimum per part (S3 requirement)
-  const TARGET_PARTS = 100 // Target 100 parts for maximum parallelism
+  // Dynamic part sizing: use measured client upload speed (if available) to
+  // choose part size and concurrency that avoid timeouts and reduce retries.
+  const MIN_PART_SIZE = 5 * 1024 * 1024 // 5 MB (S3 requirement)
+  const MAX_PART_SIZE = 25 * 1024 * 1024 // 25 MB cap per part to keep parts manageable
+  const DEFAULT_TARGET_PARTS = 100 // fallback
 
+  // Load last measured upload speed (bytes/sec) from localStorage
+  let measuredBps = 0
+  try {
+    const saved = localStorage.getItem('upload_speed_bps')
+    if (saved) measuredBps = Math.max(0, parseInt(saved))
+  } catch {}
+
+  // Fallback baseline if no measurement (rough default 2 MB/s)
+  const BASELINE_BPS = 2 * 1024 * 1024
+  const speedBps = measuredBps > 0 ? measuredBps : BASELINE_BPS
+
+  // Safety buffer to account for variability
+  const SAFETY = 0.7
+  // Target per-part upload duration in seconds
+  const TARGET_PART_SECONDS = 25
+
+  // Compute recommended part size from speed and safety buffer
+  let recommendedPartSize = Math.floor(speedBps * SAFETY * TARGET_PART_SECONDS)
+  if (recommendedPartSize < MIN_PART_SIZE) recommendedPartSize = MIN_PART_SIZE
+  if (recommendedPartSize > MAX_PART_SIZE) recommendedPartSize = MAX_PART_SIZE
+
+  // If file is very small, just single part
   let partSize: number
   let numParts: number
-
   if (file.size <= MIN_PART_SIZE) {
-    // Very small files (≤5MB): single part upload (no multipart needed)
     partSize = file.size
     numParts = 1
-  } else if (file.size < MIN_PART_SIZE * TARGET_PARTS) {
-    // Small-medium files (<500MB): use minimum part size
-    // This results in fewer than 100 parts (e.g., 150MB = 30 parts @ 5MB each)
-    partSize = MIN_PART_SIZE
-    numParts = Math.ceil(file.size / partSize)
   } else {
-    // Large files (≥500MB): split into exactly 100 parts
-    // (e.g., 500MB = 100 parts @ 5MB each, 1GB = 100 parts @ 10MB each)
-    partSize = Math.ceil(file.size / TARGET_PARTS)
-    numParts = TARGET_PARTS
+    partSize = recommendedPartSize
+    numParts = Math.max(1, Math.ceil(file.size / partSize))
+    // Keep parts in a reasonable range
+    if (numParts > DEFAULT_TARGET_PARTS * 2) {
+      numParts = DEFAULT_TARGET_PARTS * 2
+      partSize = Math.ceil(file.size / numParts)
+    }
   }
 
   log(`[MULTIPART UPLOAD] Starting multipart upload`, {
@@ -73,9 +87,22 @@ async function uploadFileViaMultipart(
     progress_granularity: `${(100 / numParts).toFixed(1)}%`,
   })
 
+  // Set concurrency based on speed: slower connections → fewer concurrent parts
+  let maxConcurrent = 6
+  if (speedBps < 1 * 1024 * 1024) maxConcurrent = 3 // <1 MB/s
+  else if (speedBps < 2 * 1024 * 1024) maxConcurrent = 4
+  else if (speedBps < 5 * 1024 * 1024) maxConcurrent = 5
+  else maxConcurrent = 6
+
+  // Derive upload timeout: roughly 2x expected per-part time, with bounds
+  const expectedPartSeconds = partSize / Math.max(1, speedBps * SAFETY)
+  const uploadTimeoutMs = Math.min(300_000, Math.max(60_000, Math.ceil(expectedPartSeconds * 2000)))
+
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
   const client = new MultipartUploadClient(apiUrl, sessionKey, {
-    partSize: partSize
+    partSize: partSize,
+    maxConcurrentParts: maxConcurrent,
+    uploadTimeoutMs,
   })
 
   // Register for cancellation
