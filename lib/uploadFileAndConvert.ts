@@ -106,9 +106,9 @@ async function uploadFileViaMultipart(
   const perUploadShare = Math.max(1, Math.floor(globalMax / concurrentUploads))
   maxConcurrent = Math.max(1, Math.min(maxConcurrent, perUploadShare))
 
-  // Derive upload timeout: roughly 2x expected per-part time, with bounds
+  // Derive upload timeout: roughly 3x expected per-part time to account for S3 latency, with bounds
   const expectedPartSeconds = partSize / Math.max(1, effectiveBps * SAFETY)
-  const uploadTimeoutMs = Math.min(300_000, Math.max(60_000, Math.ceil(expectedPartSeconds * 2000)))
+  const uploadTimeoutMs = Math.min(300_000, Math.max(180_000, Math.ceil(expectedPartSeconds * 3000)))
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
   const client = new MultipartUploadClient(apiUrl, sessionKey, {
