@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "sonner"
 import { ConverterModeProvider } from "@/contexts/converter-mode-context"
 import { ErrorBoundary } from "@/components/error-boundary"
-import { ConditionalClerkProvider } from "@/components/conditional-clerk-provider"
+import { ClerkProvider } from "@clerk/nextjs"
 
 const mplus = M_PLUS_Rounded_1c({
   weight: ["400", "700", "800"],
@@ -96,7 +96,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <ConditionalClerkProvider>
+    <ClerkProvider>
       <html lang="en" suppressHydrationWarning>
         <head>
           {/* Favicon and icons */}
@@ -139,6 +139,6 @@ export default function RootLayout({
           </ErrorBoundary>
         </body>
       </html>
-    </ConditionalClerkProvider>
+    </ClerkProvider>
   )
 }

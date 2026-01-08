@@ -93,6 +93,7 @@ export function ConversionQueue({
   const [uploadSpeed, setUploadSpeed] = useState<number>(0) // bytes per second
   const [uploadStartTime, setUploadStartTime] = useState<number>(0)
   const [lastEtaUpdateTime, setLastEtaUpdateTime] = useState<number>(0)
+  const [speedSampleCount, setSpeedSampleCount] = useState<number>(0)
   const uploadJobIdRef = useRef<string>("unknown")
   const lastLoggedUploadRemainingRef = useRef<number | null>(null)
 
@@ -322,6 +323,7 @@ export function ConversionQueue({
       setUploadEta(undefined)
       setLastUploadProgress(0)
       setLastUploadTime(Date.now())
+      setSpeedSampleCount(0)
     }
   }, [currentStatus])
 
@@ -331,7 +333,7 @@ export function ConversionQueue({
     const uploadingFile = pendingUploads.find((f) => f.status === "UPLOADING")
     const isUploading = currentStatus === "UPLOADING" || uploadingFile !== undefined
 
-    if (isUploading && uploadProgress !== undefined && uploadProgress > 0) {
+    if (isUploading && uploadProgress !== undefined && uploadProgress >= 0) {
       const now = Date.now()
 
       // Initialize upload start time on first progress update
@@ -340,25 +342,8 @@ export function ConversionQueue({
         setLastUploadProgress(uploadProgress)
         setLastUploadTime(now)
         setLastEtaUpdateTime(now)
+        setSpeedSampleCount(0)
 
-        // Calculate initial ETA
-        const currentFile = uploadingFile || pendingUploads.find((f) => f.status === "UPLOADING")
-        if (currentFile && currentFile.size) {
-          const fileSize = currentFile.size
-          const uploadedBytes = currentFile.upload_progress?.uploaded_bytes || (uploadProgress / 100) * fileSize
-          // Estimate initial speed based on first progress point
-          const elapsedSeconds = Math.max(1, (now - (currentFile.upload_progress?.started_at || now)) / 1000)
-          const initialSpeed = uploadedBytes / elapsedSeconds
-          const remainingBytes = fileSize - uploadedBytes
-          const estimatedSeconds = initialSpeed > 0 ? remainingBytes / initialSpeed : 0
-
-          setUploadSpeed(initialSpeed)
-          setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
-        }
-        // Initialize displayed upload ETA from initial estimate
-        if (uploadEta && uploadEta > 0) {
-          setDisplayedUploadRemainingSec(uploadEta)
-        }
         // Capture job id for logging
         const jId = (uploadingFile as any)?.jobId || (uploadingFile as any)?.job_id
         uploadJobIdRef.current = jId || "unknown"
@@ -386,26 +371,28 @@ export function ConversionQueue({
           : (progressDelta / 100) * fileSize
         const instantSpeed = bytesDelta / timeDelta
 
-        // Use exponential moving average to smooth out speed fluctuations
-        // This prevents ETA from jumping around too much
-        const smoothingFactor = 0.3 // Lower = more smoothing
+        const smoothingFactor = speedSampleCount < 5 ? 0.15 : 0.25 // More smoothing initially
         const smoothedSpeed =
           uploadSpeed === 0 ? instantSpeed : smoothingFactor * instantSpeed + (1 - smoothingFactor) * uploadSpeed
 
         setUploadSpeed(smoothedSpeed)
         setLastUploadProgress(uploadProgress)
         setLastUploadTime(now)
+        setSpeedSampleCount((prev) => prev + 1)
 
-        // Only update ETA every 5 seconds
-        if (etaTimeDelta >= 5) {
+        // Require at least 3 samples before showing ETA to users
+        if (speedSampleCount >= 3 && etaTimeDelta >= 10) {
           // Calculate remaining bytes and ETA
           const remainingBytes = fileSize - uploadedBytes
           const estimatedSeconds = smoothedSpeed > 0 ? remainingBytes / smoothedSpeed : 0
 
-          setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
-          setLastEtaUpdateTime(now)
-          // Also refresh displayed countdown to match latest estimate
-          setDisplayedUploadRemainingSec(Math.max(1, Math.round(estimatedSeconds)))
+          // Ignore estimates over 1 hour as they're likely inaccurate
+          if (estimatedSeconds > 0 && estimatedSeconds < 3600) {
+            setUploadEta(Math.max(1, Math.round(estimatedSeconds)))
+            setLastEtaUpdateTime(now)
+            // Also refresh displayed countdown to match latest estimate
+            setDisplayedUploadRemainingSec(Math.max(1, Math.round(estimatedSeconds)))
+          }
         }
       }
     } else if (!isUploading) {
@@ -414,8 +401,20 @@ export function ConversionQueue({
       setUploadSpeed(0)
       setUploadEta(undefined)
       setDisplayedUploadRemainingSec(null)
+      setSpeedSampleCount(0)
     }
-  }, [uploadProgress, currentStatus, pendingUploads])
+  }, [
+    uploadProgress,
+    currentStatus,
+    pendingUploads,
+    speedSampleCount,
+    uploadEta,
+    uploadSpeed,
+    uploadStartTime,
+    lastUploadProgress,
+    lastUploadTime,
+    lastEtaUpdateTime,
+  ])
 
   // Keep displayed upload ETA in sync when a fresh estimate arrives
   useEffect(() => {
@@ -636,8 +635,8 @@ export function ConversionQueue({
     if (status === "UPLOADING") {
       // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
       // The backend's percentage is based on completed parts only, which lags behind actual upload progress
-      const uploadPct = uploadProgress || Number.parseFloat(file.upload_progress?.percentage) || 1
-      const safeUploadPct = Math.max(1, Math.min(100, uploadPct))
+      const uploadPct = uploadProgress || Number.parseFloat(file.upload_progress?.percentage) || 0
+      const safeUploadPct = Math.max(0, Math.min(100, uploadPct))
       let label = `Uploading - ${Math.round(safeUploadPct)}%`
       if (uploadSpeed > 0) {
         label += ` (@${formatUploadSpeed(uploadSpeed)})`
@@ -703,15 +702,8 @@ export function ConversionQueue({
       { icon: CheckCircle2, label: "Complete", shortLabel: "Done", active: stage >= 3 },
     ]
 
-    // Calculate cumulative progress (each stage is 25% of total)
-    const totalStages = stages.length
-    const stageWeight = 100 / totalStages // 25% per stage
-    let cumulativeProgress = 0
-
-    if (stage >= 0) {
-      cumulativeProgress = stage * stageWeight
-      cumulativeProgress += (progress / 100) * stageWeight
-    }
+    // Each stage shows its own 100% progress bar when active
+    const currentStageProgress = stage >= 0 && stage < stages.length ? progress : 0
 
     return (
       <div className="w-full">
@@ -734,12 +726,14 @@ export function ConversionQueue({
                 )
               })()}
               <div className="min-w-0 flex-1">
-                <span className="text-sm font-medium text-foreground block truncate">
-                  {stages[Math.max(0, stage)]?.label || "Ready"}
+                <span
+                  className={`text-sm font-medium text-foreground block truncate ${stage >= 0 && stage < stages.length && stages[stage] ? "" : stage >= stages.length ? "line-through opacity-60" : ""}`}
+                >
+                  {stages[Math.max(0, Math.min(stage, stages.length - 1))]?.label || "Ready"}
                 </span>
                 {stage >= 0 && (
                   <span className="text-xs text-muted-foreground">
-                    {Math.round(progress)}%{eta != null && eta > 0 && ` · ${formatTime(eta)}`}
+                    {Math.round(currentStageProgress)}%{eta != null && eta > 0 && ` · ${formatTime(eta)}`}
                   </span>
                 )}
               </div>
@@ -748,65 +742,70 @@ export function ConversionQueue({
             {actionButtons && <div className="flex-shrink-0">{actionButtons}</div>}
           </div>
 
-          {/* Progress track with stage indicators */}
-          <div className="relative pt-1 pb-1">
-            {/* Track background */}
-            <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
-              {/* Upload stage: show dual layers for sent/received */}
-              {stage === 0 && currentStatus === "UPLOADING" ? (
-                <>
-                  {/* Light layer: total sent */}
-                  <div
-                    className="absolute inset-y-0 left-0 top-1 h-2 bg-primary/40 rounded-full transition-all duration-300"
-                    style={{ width: `${Math.min(100, cumulativeProgress)}%` }}
-                  />
-                  {/* Dark layer: confirmed received */}
-                  {uploadProgressConfirmed > 0 && (
+          {stage >= 0 && stage < stages.length && (
+            <div className="relative pt-1 pb-1">
+              {/* Track background */}
+              <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+                {/* Upload stage: show dual layers for sent/received */}
+                {stage === 0 && currentStatus === "UPLOADING" ? (
+                  <>
+                    {/* Light layer: total sent */}
                     <div
-                      className="absolute inset-y-0 left-0 top-1 h-2 bg-primary rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, (uploadProgressConfirmed / 100) * stageWeight)}%` }}
+                      className="absolute inset-y-0 left-0 top-1 h-2 bg-primary/40 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                     />
-                  )}
-                </>
-              ) : (
-                <div
-                  className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
-                  style={{ width: `${Math.min(100, cumulativeProgress)}%` }}
-                />
-              )}
-            </div>
-
-            {/* Stage markers overlaid on track */}
-            <div className="absolute inset-x-0 top-1 h-2 flex items-center justify-between pointer-events-none">
-              {stages.map((s, i) => {
-                const isCompleted = i < stage
-                const isCurrent = i === stage
-                return (
+                    {/* Dark layer: confirmed received */}
+                    {uploadProgressConfirmed > 0 && (
+                      <div
+                        className="absolute inset-y-0 left-0 top-1 h-2 bg-primary rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
+                      />
+                    )}
+                  </>
+                ) : (
                   <div
-                    key={i}
-                    className={`
+                    className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${Math.min(100, currentStageProgress)}%` }}
+                  />
+                )}
+              </div>
+
+              {/* Stage markers overlaid on track */}
+              <div className="absolute inset-x-0 top-1 h-2 flex items-center justify-between pointer-events-none">
+                {stages.map((s, i) => {
+                  const isCompleted = i < stage
+                  const isCurrent = i === stage
+                  return (
+                    <div
+                      key={i}
+                      className={`
                       w-2 h-2 rounded-full transition-all duration-300 ring-2 ring-background
                       ${isCompleted ? "bg-primary" : isCurrent ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}
                     `}
-                  />
-                )
-              })}
+                    />
+                  )
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Stage labels row */}
           <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0">
-            {stages.map((s, i) => (
-              <span
-                key={i}
-                className={`
+            {stages.map((s, i) => {
+              const isCompleted = i < stage
+              return (
+                <span
+                  key={i}
+                  className={`
                   transition-colors text-center w-12
                   ${i === stage ? "text-foreground font-medium" : ""}
+                  ${isCompleted ? "line-through opacity-60" : ""}
                 `}
-              >
-                {s.shortLabel}
-              </span>
-            ))}
+                >
+                  {s.shortLabel}
+                </span>
+              )
+            })}
           </div>
 
           {/* Upload speed info on mobile */}
@@ -835,16 +834,6 @@ export function ConversionQueue({
                   }}
                 />
 
-                {/* Progress connector line - contiguous fill based on cumulative progress */}
-                <div
-                  className="absolute h-0.5 bg-primary top-5 transition-all duration-500 ease-out"
-                  style={{
-                    left: "20px",
-                    /* Calculate width: total track width is (100% - 40px), progress fills portion of that */
-                    width: stage < 0 ? "0%" : `calc((100% - 40px) * ${Math.min(100, cumulativeProgress) / 100})`,
-                  }}
-                />
-
                 {/* Stage nodes */}
                 {stages.map((s, i) => {
                   const Icon = s.icon
@@ -857,7 +846,7 @@ export function ConversionQueue({
                       {/* Icon container */}
                       <div
                         className={`
-                          relative z-10 flex items-center justify-center 
+                          relative z-10 flex items-center justify-center
                           w-10 h-10 rounded-full border-2 transition-all duration-300
                           ${
                             isCurrentStage
@@ -881,6 +870,7 @@ export function ConversionQueue({
                           className={`
                             text-xs font-medium transition-colors block
                             ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
+                            ${isPastStage ? "line-through opacity-60" : ""}
                           `}
                         >
                           <span className="hidden lg:inline">{s.label}</span>
@@ -890,7 +880,7 @@ export function ConversionQueue({
                         {/* Progress info for current stage */}
                         {isCurrentStage && (
                           <div className="text-[10px] text-muted-foreground mt-0.5">
-                            {Math.round(progress)}%
+                            {Math.round(currentStageProgress)}%
                             {eta != null && eta > 0 && <span className="hidden md:inline"> · {formatTime(eta)}</span>}
                           </div>
                         )}
@@ -900,31 +890,53 @@ export function ConversionQueue({
                 })}
               </div>
 
-              {/* Upload progress detail (shown below timeline for upload stage) */}
-              {stage === 0 && currentStatus === "UPLOADING" && (
+              {stage >= 0 && stage < stages.length && (
                 <div className="mt-4 mx-5">
                   <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
-                    {/* Light layer: sent bytes */}
-                    <div
-                      className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, uploadProgress || 0)}%` }}
-                    />
-                    {/* Dark layer: confirmed received */}
-                    {uploadProgressConfirmed > 0 && (
+                    {/* Upload stage: show dual layers for sent/received */}
+                    {stage === 0 && currentStatus === "UPLOADING" ? (
+                      <>
+                        {/* Light layer: sent bytes */}
+                        <div
+                          className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, currentStageProgress)}%` }}
+                        />
+                        {/* Dark layer: confirmed received */}
+                        {uploadProgressConfirmed > 0 && (
+                          <div
+                            className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
+                          />
+                        )}
+                      </>
+                    ) : (
                       <div
-                        className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
+                        className="h-full bg-primary rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                       />
                     )}
                   </div>
                   <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
-                    <span>
-                      Sent: {Math.round(uploadProgress || 0)}%
-                      {uploadProgressConfirmed > 0 && (
-                        <span className="ml-2 text-primary">· Confirmed: {Math.round(uploadProgressConfirmed)}%</span>
-                      )}
-                    </span>
-                    {uploadSpeed > 0 && <span>{formatUploadSpeed(uploadSpeed)}</span>}
+                    {stage === 0 && currentStatus === "UPLOADING" ? (
+                      <>
+                        <span>
+                          Sent: {Math.round(currentStageProgress)}%
+                          {uploadProgressConfirmed > 0 && (
+                            <span className="ml-2 text-primary">
+                              · Confirmed: {Math.round(uploadProgressConfirmed)}%
+                            </span>
+                          )}
+                        </span>
+                        {uploadSpeed > 0 && <span>{formatUploadSpeed(uploadSpeed)}</span>}
+                      </>
+                    ) : (
+                      <>
+                        <span>
+                          {stages[stage]?.label}: {Math.round(currentStageProgress)}%
+                        </span>
+                        {eta != null && eta > 0 && <span>{formatTime(eta)} remaining</span>}
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -962,9 +974,8 @@ export function ConversionQueue({
       // Priority: Use global uploadProgress (real-time from frontend) over backend's file.upload_progress
       // The backend's percentage is based on completed parts only, which lags behind actual upload progress
       const percentage =
-        uploadProgress || (file.upload_progress ? Number.parseFloat(file.upload_progress.percentage) : 1)
-      // Always show at least 1%
-      const safePercentage = Math.max(1, Math.min(100, percentage))
+        uploadProgress || (file.upload_progress ? Number.parseFloat(file.upload_progress.percentage) : 0)
+      const safePercentage = Math.max(0, Math.min(100, percentage))
       let uploadLabel = `Uploading - ${Math.round(safePercentage)}%`
 
       // Add ETA with speed in parentheses (same as global upload progress)
@@ -998,8 +1009,7 @@ export function ConversionQueue({
 
     switch (currentStatus) {
       case "UPLOADING":
-        // Always show at least 1% progress
-        const safeUploadProgress = Math.max(1, Math.min(100, uploadProgress || 1))
+        const safeUploadProgress = Math.max(0, Math.min(100, uploadProgress || 0))
 
         let uploadLabel = `Uploading - ${Math.round(safeUploadProgress)}%`
 

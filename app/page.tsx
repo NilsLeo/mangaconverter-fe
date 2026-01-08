@@ -26,32 +26,34 @@ const HomePage: FC = () => {
       if (!sessionInitializedRef.current) {
         sessionInitializedRef.current = true
         const eventType = event.type
-        console.log(`🎯 [SESSION CREATED] User interaction detected (${eventType}) - Creating new session to avoid bot pollution`)
+        console.log(
+          `🎯 [SESSION CREATED] User interaction detected (${eventType}) - Creating new session to avoid bot pollution`,
+        )
         initializeSession()
 
         // Remove listeners after first trigger
-        window.removeEventListener('mousemove', initOnInteraction)
-        window.removeEventListener('touchstart', initOnInteraction)
-        window.removeEventListener('click', initOnInteraction)
-        window.removeEventListener('keydown', initOnInteraction)
+        window.removeEventListener("mousemove", initOnInteraction)
+        window.removeEventListener("touchstart", initOnInteraction)
+        window.removeEventListener("click", initOnInteraction)
+        window.removeEventListener("keydown", initOnInteraction)
       }
     }
 
     // Listen for real user interactions
     // Note: { once: true } doesn't work well with multiple listeners, so we manually remove them
-    window.addEventListener('mousemove', initOnInteraction)
-    window.addEventListener('touchstart', initOnInteraction) // Mobile users
-    window.addEventListener('click', initOnInteraction)
-    window.addEventListener('keydown', initOnInteraction) // Keyboard navigation
+    window.addEventListener("mousemove", initOnInteraction)
+    window.addEventListener("touchstart", initOnInteraction) // Mobile users
+    window.addEventListener("click", initOnInteraction)
+    window.addEventListener("keydown", initOnInteraction) // Keyboard navigation
 
-    console.log('[HomePage] Interaction listeners registered - waiting for user interaction')
+    console.log("[HomePage] Interaction listeners registered - waiting for user interaction")
 
     return () => {
       // Cleanup listeners on unmount
-      window.removeEventListener('mousemove', initOnInteraction)
-      window.removeEventListener('touchstart', initOnInteraction)
-      window.removeEventListener('click', initOnInteraction)
-      window.removeEventListener('keydown', initOnInteraction)
+      window.removeEventListener("mousemove", initOnInteraction)
+      window.removeEventListener("touchstart", initOnInteraction)
+      window.removeEventListener("click", initOnInteraction)
+      window.removeEventListener("keydown", initOnInteraction)
     }
   }, [initializeSession])
 
