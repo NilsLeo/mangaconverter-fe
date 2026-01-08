@@ -50,7 +50,7 @@ export function useQueuePolling(
   _interval = 30000, // Unused parameter, kept for backward compatibility
   enabled = true
 ) {
-  const { isLoading: sessionLoading } = useSessionManager()
+  const { isLoading: sessionLoading, sessionKey } = useSessionManager()
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [isConnecting, setIsConnecting] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -65,7 +65,6 @@ export function useQueuePolling(
       return
     }
 
-    const sessionKey = getSessionKey()
     if (!sessionKey) {
       console.log('[WEBSOCKET] No session key, skipping connection')
       return
@@ -131,7 +130,7 @@ export function useQueuePolling(
       socket.disconnect()
       socketRef.current = null
     }
-  }, [enabled, sessionLoading, API_BASE_URL])
+  }, [enabled, sessionLoading, API_BASE_URL, sessionKey])
 
   // Manual refresh function
   const refresh = useCallback(() => {
