@@ -584,7 +584,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
     })
 
     // Remove jobs that are no longer present in the WebSocket update
-    // This runs ALWAYS (even when queue is empty) to clean up dismissed/cancelled jobs
+    // BUT keep QUEUED/PROCESSING jobs even if missing (mobile reconnect protection)
     setPendingUploads((prev) => {
       const wsJobIds = new Set(queueStatus.jobs.map((job) => job.job_id))
 
@@ -601,8 +601,19 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         // Keep files being dismissed (they'll be removed once dismissal completes)
         if (dismissingJobs.has(file.jobId)) return true
 
+        // IMPORTANT: Keep QUEUED and PROCESSING jobs even if missing from WebSocket update
+        // This prevents jobs from disappearing on mobile when WebSocket reconnects
+        // and misses intermediate updates. Jobs will be cleaned up when they reach
+        // COMPLETE/ERRORED/CANCELLED or after timeout.
+        if (file.status === "QUEUED" || file.status === "PROCESSING") {
+          console.log(
+            `[v0] Keeping ${file.status} job ${file.jobId} despite missing from WebSocket (mobile reconnect protection)`,
+          )
+          return true
+        }
+
         // Remove all other jobs that are missing from this WebSocket update
-        // This handles dismissed/cancelled jobs filtered out by backend
+        // This handles dismissed/cancelled/completed jobs filtered out by backend
         // Completed files are already in convertedFiles, so they can be safely removed from pendingUploads
         log(`[WEBSOCKET] Removing job ${file.jobId} (${file.name}) - no longer in session update`)
         return false

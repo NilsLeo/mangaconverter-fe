@@ -61,7 +61,7 @@ const HomePage: FC = () => {
     <div className={`min-h-screen bg-background flex flex-col ${themeClass}`}>
       <DynamicTitle contentType={contentType} />
       <StructuredData contentType={contentType} />
-      <header className="border-b sticky top-0 z-10 bg-background md:bg-background/95 md:backdrop-blur md:supports-[backdrop-filter]:bg-background/60">
+      <header className="border-b sticky top-0 z-50 bg-background">
         <div className="container mx-auto px-4 py-4 md:py-5 flex justify-between items-center">
           <Logo />
           <div className="flex items-center gap-4">

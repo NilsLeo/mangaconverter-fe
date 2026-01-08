@@ -725,57 +725,89 @@ export function ConversionQueue({
     return (
       <div className="w-full">
         <div className="block sm:hidden space-y-3">
-          {/* Header row with stage info and action button */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-              {(() => {
-                const CurrentIcon = stages[Math.max(0, stage)]?.icon || Upload
-                const isActive = stage >= 0 && stage < 3
-                const isFinished = stage >= 3
-                return (
-                  <div
-                    className={`
-                      rounded-full p-2 flex-shrink-0 transition-all
-                      ${isActive ? "bg-primary text-primary-foreground" : isFinished && isError ? "bg-destructive text-destructive-foreground" : isFinished ? "bg-green-500 text-white" : "bg-muted text-muted-foreground"}
-                    `}
-                  >
-                    <CurrentIcon className={`h-4 w-4 ${isActive ? "animate-pulse" : ""}`} />
-                  </div>
-                )
-              })()}
-              <div className="min-w-0 flex-1">
-                <span
-                  className={`text-sm font-medium text-foreground block truncate ${stage >= 3 ? "line-through opacity-60" : ""}`}
-                >
-                  {stages[Math.max(0, Math.min(stage, stages.length - 1))]?.label || "Ready"}
-                </span>
-                {stage >= 0 && stage < 3 && (
-                  <span className="text-xs text-muted-foreground">
-                    {Math.round(currentStageProgress)}%{eta != null && eta > 0 && ` · ${formatTime(eta)}`}
-                  </span>
-                )}
+          {/* Stage nodes with connector line */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1">
+              <div className="relative flex items-start justify-between">
+                {/* Background connector line */}
+                <div
+                  className="absolute h-0.5 bg-muted top-4"
+                  style={{
+                    left: "16px" /* half of node width (32px / 2) */,
+                    right: "16px",
+                  }}
+                />
+
+                {/* Stage nodes */}
+                {stages.map((s, i) => {
+                  const Icon = s.icon
+                  const isCurrentStage = i === stage && stage < 3
+                  const isPastStage = stage >= 3 ? true : i < stage
+                  const isFutureStage = i > stage && stage < 3
+
+                  return (
+                    <div key={i} className="flex flex-col items-center">
+                      {/* Icon container */}
+                      <div
+                        className={`
+                          relative z-10 flex items-center justify-center
+                          w-8 h-8 rounded-full border-2 transition-all duration-300
+                          ${
+                            isCurrentStage
+                              ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                              : isPastStage && isError && i === 3
+                                ? "border-destructive bg-destructive text-destructive-foreground"
+                                : isPastStage
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-muted bg-background text-muted-foreground"
+                          }
+                        `}
+                      >
+                        {isPastStage && i < 3 ? (
+                          <CheckCircle2 className="h-4 w-4" />
+                        ) : (
+                          <Icon className={`h-4 w-4 ${isCurrentStage ? "animate-pulse" : ""}`} />
+                        )}
+                      </div>
+
+                      {/* Label */}
+                      <div className="mt-1.5 text-center">
+                        <span
+                          className={`
+                            text-[10px] font-medium transition-colors block
+                            ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
+                            ${stage >= 3 ? "line-through opacity-60" : isPastStage && i < stage ? "line-through opacity-60" : ""}
+                          `}
+                        >
+                          {s.shortLabel}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
+
             {/* Action button on right */}
-            {actionButtons && <div className="flex-shrink-0">{actionButtons}</div>}
+            {actionButtons && <div className="flex-shrink-0 ml-2">{actionButtons}</div>}
           </div>
 
+          {/* Progress bar for active stages */}
           {stage >= 0 && stage < 3 && (
-            <div className="relative pt-1 pb-1">
-              {/* Track background */}
-              <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+            <div className="space-y-2">
+              <div className="relative h-2 bg-muted rounded-full overflow-hidden">
                 {/* Upload stage: show dual layers for sent/received */}
                 {stage === 0 && currentStatus === "UPLOADING" ? (
                   <>
                     {/* Light layer: total sent */}
                     <div
-                      className="absolute inset-y-0 left-0 top-1 h-2 bg-primary/40 rounded-full transition-all duration-300"
+                      className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
                       style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                     />
                     {/* Dark layer: confirmed received */}
                     {uploadProgressConfirmed > 0 && (
                       <div
-                        className="absolute inset-y-0 left-0 top-1 h-2 bg-primary rounded-full transition-all duration-300"
+                        className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
                         style={{ width: `${Math.min(100, uploadProgressConfirmed)}%` }}
                       />
                     )}
@@ -788,51 +820,29 @@ export function ConversionQueue({
                 )}
               </div>
 
-              {/* Stage markers overlaid on track */}
-              <div className="absolute inset-x-0 top-1 h-2 flex items-center justify-between pointer-events-none">
-                {stages.map((s, i) => {
-                  const isCompleted = i < stage
-                  const isCurrent = i === stage
-                  return (
-                    <div
-                      key={i}
-                      className={`
-                      w-2 h-2 rounded-full transition-all duration-300 ring-2 ring-background
-                      ${isCompleted ? "bg-primary" : isCurrent ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}
-                    `}
-                    />
-                  )
-                })}
+              {/* Progress text */}
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
+                {stage === 0 && currentStatus === "UPLOADING" ? (
+                  <>
+                    <span>
+                      Sent: {Math.round(currentStageProgress)}%
+                      {uploadProgressConfirmed > 0 && (
+                        <span className="ml-1.5 text-primary hidden xs:inline">
+                          · Confirmed: {Math.round(uploadProgressConfirmed)}%
+                        </span>
+                      )}
+                    </span>
+                    {uploadSpeed > 0 && <span className="hidden xs:inline">{formatUploadSpeed(uploadSpeed)}</span>}
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      {Math.round(currentStageProgress)}% {stages[stage]?.label || ""}
+                    </span>
+                    {eta != null && eta > 0 && <span>{formatTime(eta)}</span>}
+                  </>
+                )}
               </div>
-            </div>
-          )}
-
-          {/* Stage labels row */}
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0">
-            {stages.map((s, i) => {
-              const isStageCompleted = stage >= 3 ? true : i < stage
-              return (
-                <span
-                  key={i}
-                  className={`
-                  transition-colors text-center w-12
-                  ${i === stage && stage < 3 ? "text-foreground font-medium" : ""}
-                  ${isStageCompleted ? "line-through opacity-60" : ""}
-                `}
-                >
-                  {s.shortLabel}
-                </span>
-              )
-            })}
-          </div>
-
-          {/* Upload speed info on mobile */}
-          {stage === 0 && currentStatus === "UPLOADING" && uploadSpeed > 0 && (
-            <div className="text-xs text-muted-foreground text-center bg-muted/50 rounded-md py-1.5 px-2">
-              {formatUploadSpeed(uploadSpeed)}
-              {uploadProgressConfirmed > 0 && (
-                <span className="ml-2 text-primary">· {Math.round(uploadProgressConfirmed)}% confirmed</span>
-              )}
             </div>
           )}
         </div>
@@ -913,7 +923,7 @@ export function ConversionQueue({
 
               {stage >= 0 && stage < 3 && (
                 <div className="mt-4 mx-5">
-                  <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="relative h-2 md:h-1.5 bg-muted rounded-full overflow-hidden">
                     {/* Upload stage: show dual layers for sent/received */}
                     {stage === 0 && currentStatus === "UPLOADING" ? (
                       <>
@@ -937,7 +947,7 @@ export function ConversionQueue({
                       />
                     )}
                   </div>
-                  <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+                  <div className="flex items-center justify-between mt-1.5 text-[11px] md:text-[10px] text-muted-foreground">
                     {stage === 0 && currentStatus === "UPLOADING" ? (
                       <>
                         <span>
@@ -948,7 +958,7 @@ export function ConversionQueue({
                             </span>
                           )}
                         </span>
-                        {uploadSpeed > 0 && <span>{formatUploadSpeed(uploadSpeed)}</span>}
+                        {uploadSpeed > 0 && <span className="hidden sm:inline">{formatUploadSpeed(uploadSpeed)}</span>}
                       </>
                     ) : (
                       <>
