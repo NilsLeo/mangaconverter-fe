@@ -5,7 +5,6 @@ import type React from "react"
 import { useState, useEffect, useRef, useCallback } from "react" // Added useCallback
 import { toast } from "sonner"
 import { uploadFileAndConvert } from "@/lib/uploadFileAndConvert" // make sure you import it
-import { measureUploadSpeed, saveUploadSpeed, getSavedUploadSpeed } from "@/lib/netSpeed"
 import { ConversionQueue } from "./conversion-queue"
 import { Footer } from "./footer"
 import { DEVICE_PROFILES } from "@/lib/device-profiles"
@@ -133,7 +132,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   const recentlyDismissedRef = useRef<Map<string, number>>(new Map())
 
   // Persist a short-lived cache of dismissed jobs to survive reloads
-  
 
   // Track which jobs are being cancelled (jobId -> true)
   const [cancellingJobs, setCancellingJobs] = useState<Set<string>>(new Set())
@@ -247,28 +245,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
     initialize()
 
-    // Early upload speed test on first mount (3s). Use cached if fresh.
-    const cached = getSavedUploadSpeed(5 * 60 * 1000)
-    if (!cached) {
-      log("[NetSpeed] No recent cached speed; running initial quick test")
-      let cancelled = false
-      ;(async () => {
-        try {
-          const bps = await measureUploadSpeed(3000, 64 * 1024)
-          if (!cancelled && bps > 0) {
-            saveUploadSpeed(bps)
-            log("[NetSpeed] Measured initial upload speed", { bps })
-          }
-        } catch (e) {
-          // Log but don’t surface to user
-          const msg = e instanceof Error ? e.message : String(e)
-          console.warn('[NetSpeed] Initial speed test failed', msg)
-        }
-      })()
-      return () => {
-        cancelled = true
-      }
-    }
+    // Speed test will run when needed during actual uploads instead
   }, []) // Run only once on mount
 
   // Sync WebSocket session updates with pendingUploads
@@ -299,7 +276,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           if (ts && Date.now() - ts < 60_000) {
             return prev
           }
-          
+
           // If user is dismissing this job, ignore it in incoming updates
           if (dismissingJobs.has(job.job_id)) {
             return prev
@@ -409,8 +386,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               updated.downloadId = job.job_id
               updated.convertedTimestamp = job.completed_at ? new Date(job.completed_at).getTime() : Date.now()
 
-          // Only show toast if just completed (within last 10s) and not yet shown
-          // Suppress completion toast
+              // Only show toast if just completed (within last 10s) and not yet shown
+              // Suppress completion toast
             }
 
             return updated
@@ -529,13 +506,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
   }, [jobStatuses, cancellingJobs, dismissingJobs])
 
   // Removed monitored_jobs persistence; no-op placeholders left for safety
-  const saveJobToStorage = (
-    _jobId: string,
-    _name: string,
-    _size: number,
-    _status: string,
-    _additionalData?: any,
-  ) => {}
+  const saveJobToStorage = (_jobId: string, _name: string, _size: number, _status: string, _additionalData?: any) => {}
 
   const removeJobFromStorage = (_jobId: string, _force = false) => {}
 
@@ -560,7 +531,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
     // Remember dismissal to avoid re-adding from WebSocket for a short time
     recentlyDismissedRef.current.set(file.jobId!, Date.now())
-    
 
     // Call backend to set dismissed_at timestamp (for all job statuses)
     try {
@@ -616,7 +586,6 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           map.delete(jobId)
         }
       }
-      
     }, 30_000)
     return () => clearInterval(interval)
   }, [])

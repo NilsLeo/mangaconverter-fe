@@ -55,13 +55,8 @@ export const metadata: Metadata = {
   keywords:
     "manga converter, comic converter, e-reader, kindle manga, kindle comics, kobo manga, kobo comics, convert cbz, convert pdf, manga to epub, comics to epub, manga to mobi, comics to mobi, free converter",
   authors: [{ name: "Converter Team" }],
+  // Keep only non-duplicated icon entries here to avoid duplicate <link> tags
   icons: {
-    icon: [
-      { url: "/favicon.svg", type: "image/svg+xml" },
-      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
-      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
-    ],
-    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
     other: [{ rel: "mask-icon", url: "/safari-pinned-tab.svg", color: "#8b5cf6" }],
   },
   openGraph: {
@@ -99,18 +94,20 @@ export default function RootLayout({
     <ConditionalClerkProvider>
       <html lang="en" suppressHydrationWarning>
         <head>
-          {/* Favicon and icons */}
-          <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-          <link rel="alternate icon" href="/favicon.ico" />
+          {/* Favicon and PWA icons (RealFaviconGenerator) */}
+          <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
+          <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+          <link rel="shortcut icon" href="/favicon.ico" />
           <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-          <link rel="manifest" href="/manifest.json" />
+          <meta name="apple-mobile-web-app-title" content="MangaConverter" />
+          <link rel="manifest" href="/site.webmanifest" />
 
           {/* Additional SEO meta tags */}
           <link rel="alternate" href="https://comicconverter.com" />
           <meta name="application-name" content="Manga & Comic Converter" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-          <meta name="apple-mobile-web-app-title" content="Manga & Comic Converter" />
+          {/* Title for iOS home screen added above; keep other PWA metas */}
           <meta name="format-detection" content="telephone=no" />
           <meta name="mobile-web-app-capable" content="yes" />
           <meta name="msapplication-TileColor" content="#8b5cf6" />

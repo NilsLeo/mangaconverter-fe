@@ -28,21 +28,18 @@ export class MultipartUploadClient {
   private apiBaseUrl: string
   private sessionKey: string
   private config: Required<MultipartUploadConfig>
-  private aborted: boolean = false
+  private aborted = false
   private uploadSessionId: string
 
-  constructor(
-    apiBaseUrl: string,
-    sessionKey: string,
-    config: MultipartUploadConfig = {}
-  ) {
+  constructor(apiBaseUrl: string, sessionKey: string, config: MultipartUploadConfig = {}) {
     this.apiBaseUrl = apiBaseUrl
     this.sessionKey = sessionKey
 
     // Get max concurrent parts from env var, fallback to config, then default
-    const envMaxConcurrent = typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS
-      ? Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS)
-      : undefined
+    const envMaxConcurrent =
+      typeof process !== "undefined" && process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS
+        ? Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_PARTS)
+        : undefined
 
     this.config = {
       partSize: config.partSize || 50 * 1024 * 1024, // 50MB
@@ -55,7 +52,7 @@ export class MultipartUploadClient {
     log("[MULTIPART] Client initialized", {
       maxConcurrentParts: this.config.maxConcurrentParts,
       partSize: this.config.partSize,
-      source: envMaxConcurrent ? 'env_var' : config.maxConcurrentParts ? 'config' : 'default',
+      source: envMaxConcurrent ? "env_var" : config.maxConcurrentParts ? "config" : "default",
     })
 
     // Generate unique upload session ID to prevent duplicate uploads from multiple tabs
@@ -65,11 +62,7 @@ export class MultipartUploadClient {
   /**
    * Upload a file using S3 multipart upload
    */
-  async uploadFile(
-    file: File,
-    jobId: string,
-    onProgress?: (progress: UploadProgress) => void
-  ): Promise<void> {
+  async uploadFile(file: File, jobId: string, onProgress?: (progress: UploadProgress) => void): Promise<void> {
     this.aborted = false
 
     // Check if another tab is already uploading this job
@@ -83,7 +76,7 @@ export class MultipartUploadClient {
       // If session is less than 5 minutes old, another tab is likely uploading
       if (sessionAge < 5 * 60 * 1000) {
         throw new Error(
-          "This file is already being uploaded in another tab. Please wait for it to complete or close the other tab."
+          "This file is already being uploaded in another tab. Please wait for it to complete or close the other tab.",
         )
       }
       // If session is older than 5 minutes, it's likely stale (tab was closed)
@@ -94,11 +87,14 @@ export class MultipartUploadClient {
     }
 
     // Mark this session as active
-    localStorage.setItem(storageKey, JSON.stringify({
-      sessionId: this.uploadSessionId,
-      timestamp: Date.now(),
-      jobId: jobId,
-    }))
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        sessionId: this.uploadSessionId,
+        timestamp: Date.now(),
+        jobId: jobId,
+      }),
+    )
 
     try {
       // Step 1: Initiate multipart upload + Pre-warm R2 connection
@@ -111,7 +107,7 @@ export class MultipartUploadClient {
 
       const [initResponse] = await Promise.all([
         this.initiateUpload(jobId, file.size),
-        this.prewarmConnection() // Pre-establish HTTP/2 connection to R2
+        this.prewarmConnection(), // Pre-establish HTTP/2 connection to R2
       ])
 
       const { upload_id, parts } = initResponse
@@ -131,13 +127,7 @@ export class MultipartUploadClient {
       const nextPartNumber = initResponse.next_part_number
 
       // Upload with progressive part fetching
-      await this.uploadPartsProgressive(
-        jobId,
-        file,
-        initialParts,
-        onProgress,
-        needsMoreParts ? nextPartNumber : null
-      )
+      await this.uploadPartsProgressive(jobId, file, initialParts, onProgress, needsMoreParts ? nextPartNumber : null)
 
       // Step 4: Finalize upload
       log("[MULTIPART] Finalizing upload", { job_id: jobId })
@@ -189,9 +179,8 @@ export class MultipartUploadClient {
    * Step 1: Initiate multipart upload with backend (returns first batch of URLs)
    */
   private async initiateUpload(jobId: string, fileSize: number) {
-    const response = await fetch(
-      `${this.apiBaseUrl}/jobs/${jobId}/multipart/initiate`,
-      {
+    const attemptInitiate = async (retryCount = 0): Promise<any> => {
+      const response = await fetch(`${this.apiBaseUrl}/jobs/${jobId}/multipart/initiate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -202,26 +191,57 @@ export class MultipartUploadClient {
           part_size: this.config.partSize,
           initial_batch_size: 20, // Get first 20 URLs immediately
         }),
-      }
-    )
+      })
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({
-        error: "Failed to initiate upload",
-      }))
-      throw new Error(error.error || "Failed to initiate upload")
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({
+          error: "Failed to initiate upload",
+        }))
+
+        if ((response.status === 401 || response.status === 403) && retryCount === 0) {
+          log("[MULTIPART] Invalid/unauthorized session key, clearing localStorage and obtaining fresh session", {
+            job_id: jobId,
+            status: response.status,
+            error: error.error,
+          })
+
+          // Remove invalid session from localStorage
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("mangaconverter_session_key")
+          }
+
+          // Import ensureSessionKey dynamically to avoid circular dependencies
+          const { ensureSessionKey } = await import("@/lib/utils")
+          // Force a fresh session from the backend
+          const newSessionKey = await ensureSessionKey(true)
+
+          // Update this client's session key
+          this.sessionKey = newSessionKey
+
+          log("[MULTIPART] Fresh session obtained, retrying initiate", {
+            job_id: jobId,
+            hasNewSession: !!newSessionKey,
+          })
+
+          // Retry with new session key
+          return attemptInitiate(1)
+        }
+
+        throw new Error(error.error || "Failed to initiate upload")
+      }
+
+      return await response.json()
     }
 
-    return await response.json()
+    return attemptInitiate()
   }
 
   /**
    * Fetch additional batches of presigned URLs (for progressive upload)
    */
-  private async fetchPartsBatch(jobId: string, startPart: number, batchSize: number = 20) {
-    const response = await fetch(
-      `${this.apiBaseUrl}/jobs/${jobId}/multipart/get-parts`,
-      {
+  private async fetchPartsBatch(jobId: string, startPart: number, batchSize = 20) {
+    const attemptFetch = async (retryCount = 0): Promise<any> => {
+      const response = await fetch(`${this.apiBaseUrl}/jobs/${jobId}/multipart/get-parts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -231,26 +251,59 @@ export class MultipartUploadClient {
           start_part: startPart,
           batch_size: batchSize,
         }),
-      }
-    )
+      })
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({
-        error: "Failed to fetch parts batch",
-      }))
-      throw new Error(error.error || "Failed to fetch parts batch")
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({
+          error: "Failed to fetch parts batch",
+        }))
+
+        if ((response.status === 401 || response.status === 403) && retryCount === 0) {
+          log(
+            "[MULTIPART] Invalid/unauthorized session key during fetch parts, clearing localStorage and obtaining fresh session",
+            {
+              job_id: jobId,
+              start_part: startPart,
+              status: response.status,
+              error: error.error,
+            },
+          )
+
+          // Remove invalid session from localStorage
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("mangaconverter_session_key")
+          }
+
+          // Import ensureSessionKey dynamically to avoid circular dependencies
+          const { ensureSessionKey } = await import("@/lib/utils")
+          // Force a fresh session from the backend
+          const newSessionKey = await ensureSessionKey(true)
+
+          // Update this client's session key
+          this.sessionKey = newSessionKey
+
+          log("[MULTIPART] Fresh session obtained, retrying fetch parts", {
+            job_id: jobId,
+            hasNewSession: !!newSessionKey,
+          })
+
+          // Retry with new session key
+          return attemptFetch(1)
+        }
+
+        throw new Error(error.error || "Failed to fetch parts batch")
+      }
+
+      return await response.json()
     }
 
-    return await response.json()
+    return attemptFetch()
   }
 
   /**
    * Step 2: Create upload parts from file
    */
-  private createParts(
-    file: File,
-    partUrls: Array<{ part_number: number; url: string }>
-  ): UploadPart[] {
+  private createParts(file: File, partUrls: Array<{ part_number: number; url: string }>): UploadPart[] {
     const parts: UploadPart[] = []
 
     for (const partUrl of partUrls) {
@@ -278,7 +331,7 @@ export class MultipartUploadClient {
     file: File,
     initialParts: UploadPart[],
     onProgress?: (progress: UploadProgress) => void,
-    nextPartToFetch?: number | null
+    nextPartToFetch?: number | null,
   ): Promise<void> {
     const allParts: UploadPart[] = [...initialParts]
     let isFetchingMore = false
@@ -352,7 +405,7 @@ export class MultipartUploadClient {
               completed: completedParts,
               total: allParts.length, // Dynamic total as parts are fetched
             },
-          })
+          }),
         )
       }
     }, 10000)
@@ -465,11 +518,7 @@ export class MultipartUploadClient {
               })
 
               // Trigger next batch fetch when we're getting close to running out
-              if (
-                nextPartToFetch &&
-                !isFetchingMore &&
-                partIndex >= allParts.length - 5
-              ) {
+              if (nextPartToFetch && !isFetchingMore && partIndex >= allParts.length - 5) {
                 fetchMoreParts()
               }
             })
@@ -530,7 +579,7 @@ export class MultipartUploadClient {
   private async uploadParts(
     jobId: string,
     parts: UploadPart[],
-    onProgress?: (progress: UploadProgress) => void
+    onProgress?: (progress: UploadProgress) => void,
   ): Promise<void> {
     const totalParts = parts.length
     let completedParts = 0
@@ -541,15 +590,18 @@ export class MultipartUploadClient {
     const storageKey = `multipart_upload_${jobId}`
     const heartbeatInterval = setInterval(() => {
       if (!this.aborted) {
-        localStorage.setItem(storageKey, JSON.stringify({
-          sessionId: this.uploadSessionId,
-          timestamp: Date.now(),
-          jobId: jobId,
-          progress: {
-            completed: completedParts,
-            total: totalParts,
-          },
-        }))
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            sessionId: this.uploadSessionId,
+            timestamp: Date.now(),
+            jobId: jobId,
+            progress: {
+              completed: completedParts,
+              total: totalParts,
+            },
+          }),
+        )
       }
     }, 10000) // Update every 10 seconds
 
@@ -558,59 +610,59 @@ export class MultipartUploadClient {
       const activeTasks = new Set<Promise<void>>()
       let partIndex = 0
 
-    const uploadNext = async () => {
-      while (partIndex < parts.length) {
-        if (this.aborted) {
-          throw new Error("Upload aborted")
-        }
+      const uploadNext = async () => {
+        while (partIndex < parts.length) {
+          if (this.aborted) {
+            throw new Error("Upload aborted")
+          }
 
-        // Wait if we're at max concurrency
-        while (activeTasks.size >= this.config.maxConcurrentParts) {
-          await Promise.race(activeTasks)
-        }
+          // Wait if we're at max concurrency
+          while (activeTasks.size >= this.config.maxConcurrentParts) {
+            await Promise.race(activeTasks)
+          }
 
-        const part = parts[partIndex++]
+          const part = parts[partIndex++]
 
-        const uploadTask = this.uploadPart(jobId, part)
-          .then(() => {
-            completedParts++
-            uploadedBytes += part.blob.size
+          const uploadTask = this.uploadPart(jobId, part)
+            .then(() => {
+              completedParts++
+              uploadedBytes += part.blob.size
 
-            // Report progress - this only happens after BOTH S3 upload AND backend notification succeed
-            if (onProgress) {
-              onProgress({
-                completedParts,
-                totalParts,
-                uploadedBytes,
-                totalBytes,
-                percentage: (completedParts / totalParts) * 100,
+              // Report progress - this only happens after BOTH S3 upload AND backend notification succeed
+              if (onProgress) {
+                onProgress({
+                  completedParts,
+                  totalParts,
+                  uploadedBytes,
+                  totalBytes,
+                  percentage: (completedParts / totalParts) * 100,
+                })
+              }
+
+              log("[MULTIPART] Part completed and confirmed by backend", {
+                job_id: jobId,
+                part_number: part.partNumber,
+                completed: completedParts,
+                total: totalParts,
+                percentage: ((completedParts / totalParts) * 100).toFixed(1) + "%",
               })
-            }
-
-            log("[MULTIPART] Part completed and confirmed by backend", {
-              job_id: jobId,
-              part_number: part.partNumber,
-              completed: completedParts,
-              total: totalParts,
-              percentage: ((completedParts / totalParts) * 100).toFixed(1) + "%",
             })
-          })
-          .catch((error) => {
-            logError("[MULTIPART] Part upload failed", {
-              job_id: jobId,
-              part_number: part.partNumber,
-              error: error instanceof Error ? error.message : String(error),
-              stage: "upload_or_notification",
+            .catch((error) => {
+              logError("[MULTIPART] Part upload failed", {
+                job_id: jobId,
+                part_number: part.partNumber,
+                error: error instanceof Error ? error.message : String(error),
+                stage: "upload_or_notification",
+              })
+              throw error // Re-throw to fail the entire upload
             })
-            throw error // Re-throw to fail the entire upload
-          })
-          .finally(() => {
-            activeTasks.delete(uploadTask)
-          })
+            .finally(() => {
+              activeTasks.delete(uploadTask)
+            })
 
-        activeTasks.add(uploadTask)
+          activeTasks.add(uploadTask)
+        }
       }
-    }
 
       // Start upload pump
       await uploadNext()
@@ -631,7 +683,7 @@ export class MultipartUploadClient {
   private async uploadPart(
     jobId: string,
     part: UploadPart,
-    onPartProgress?: (bytesUploaded: number) => void
+    onPartProgress?: (bytesUploaded: number) => void,
   ): Promise<void> {
     let lastError: Error | null = null
 
@@ -661,7 +713,7 @@ export class MultipartUploadClient {
 
           // Set timeout to prevent stuck uploads (Hetzner S3 timeout is ~60-80s)
           // We set it to 60s to fail faster and retry with fresh connection
-          xhr.timeout = Math.max(10000, this.config.uploadTimeoutMs)  // configurable, min 10s
+          xhr.timeout = Math.max(10000, this.config.uploadTimeoutMs) // configurable, min 10s
 
           let lastProgressTime = Date.now()
           let lastProgressBytes = 0
@@ -756,11 +808,7 @@ export class MultipartUploadClient {
 
         // If upload was aborted or backend rejected due to cancellation, don't retry
         const errorMessage = error instanceof Error ? error.message : String(error)
-        if (
-          this.aborted ||
-          errorMessage.includes("Upload aborted") ||
-          errorMessage.includes("CANCELLED status")
-        ) {
+        if (this.aborted || errorMessage.includes("Upload aborted") || errorMessage.includes("CANCELLED status")) {
           throw error
         }
 
@@ -783,33 +831,24 @@ export class MultipartUploadClient {
       onPartProgress(0)
     }
 
-    throw new Error(
-      `Part ${part.partNumber} failed after ${this.config.retryAttempts} attempts: ${lastError?.message}`
-    )
+    throw new Error(`Part ${part.partNumber} failed after ${this.config.retryAttempts} attempts: ${lastError?.message}`)
   }
 
   /**
    * Notify backend that a part was uploaded
    */
-  private async notifyPartComplete(
-    jobId: string,
-    partNumber: number,
-    etag: string
-  ): Promise<void> {
-    const response = await fetch(
-      `${this.apiBaseUrl}/jobs/${jobId}/multipart/complete-part`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Session-Key": this.sessionKey,
-        },
-        body: JSON.stringify({
-          part_number: partNumber,
-          etag: etag,
-        }),
-      }
-    )
+  private async notifyPartComplete(jobId: string, partNumber: number, etag: string): Promise<void> {
+    const response = await fetch(`${this.apiBaseUrl}/jobs/${jobId}/multipart/complete-part`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Key": this.sessionKey,
+      },
+      body: JSON.stringify({
+        part_number: partNumber,
+        etag: etag,
+      }),
+    })
 
     if (!response.ok) {
       let errorMessage = `Failed to notify backend of part ${partNumber} completion (HTTP ${response.status})`
@@ -843,16 +882,13 @@ export class MultipartUploadClient {
    * Step 4: Finalize the multipart upload
    */
   private async finalizeUpload(jobId: string): Promise<void> {
-    const response = await fetch(
-      `${this.apiBaseUrl}/jobs/${jobId}/multipart/finalize`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Session-Key": this.sessionKey,
-        },
-      }
-    )
+    const response = await fetch(`${this.apiBaseUrl}/jobs/${jobId}/multipart/finalize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Key": this.sessionKey,
+      },
+    })
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({

@@ -1,5 +1,5 @@
 import { ensureSessionKey } from "@/lib/utils" // you already have this
-import { log, logError, logWarn, logDebug } from "./logger"
+import { log, logError, logWarn } from "./logger"
 import { MultipartUploadClient } from "./MultipartUploadClient"
 
 // Track active jobs to prevent duplicates
@@ -33,10 +33,11 @@ async function uploadFileViaMultipart(
   sessionKey: string,
   fileKey: string,
   onProgress: (progress: number, fullProgressData?: any) => void,
-  sendUploadProgress?: (jobId: string, bytesUploaded: number) => void
+  sendUploadProgress?: (jobId: string, bytesUploaded: number) => void,
 ): Promise<void> {
-  // Dynamic part sizing: use measured client upload speed (if available) to
-  // choose part size and concurrency that avoid timeouts and reduce retries.
+  // Dynamic part sizing: use measured client upload speed (if available) and
+  // current global upload load to choose part size and per-file concurrency
+  // that avoid timeouts and reduce retries.
   const MIN_PART_SIZE = 5 * 1024 * 1024 // 5 MB (S3 requirement)
   const MAX_PART_SIZE = 25 * 1024 * 1024 // 25 MB cap per part to keep parts manageable
   const DEFAULT_TARGET_PARTS = 100 // fallback
@@ -44,13 +45,18 @@ async function uploadFileViaMultipart(
   // Load last measured upload speed (bytes/sec) from localStorage
   let measuredBps = 0
   try {
-    const saved = localStorage.getItem('upload_speed_bps')
-    if (saved) measuredBps = Math.max(0, parseInt(saved))
+    const saved = localStorage.getItem("upload_speed_bps")
+    if (saved) measuredBps = Math.max(0, Number.parseInt(saved))
   } catch {}
 
   // Fallback baseline if no measurement (rough default 2 MB/s)
   const BASELINE_BPS = 2 * 1024 * 1024
   const speedBps = measuredBps > 0 ? measuredBps : BASELINE_BPS
+
+  // Account for concurrent uploads in progress (including this one)
+  // Use a conservative split of available bandwidth across uploads
+  const concurrentUploads = activeUploads.size + 1
+  const effectiveBps = Math.max(64 * 1024, Math.floor(speedBps / concurrentUploads)) // floor to at least 64KB/s
 
   // Safety buffer to account for variability
   const SAFETY = 0.7
@@ -58,7 +64,7 @@ async function uploadFileViaMultipart(
   const TARGET_PART_SECONDS = 25
 
   // Compute recommended part size from speed and safety buffer
-  let recommendedPartSize = Math.floor(speedBps * SAFETY * TARGET_PART_SECONDS)
+  let recommendedPartSize = Math.floor(effectiveBps * SAFETY * TARGET_PART_SECONDS)
   if (recommendedPartSize < MIN_PART_SIZE) recommendedPartSize = MIN_PART_SIZE
   if (recommendedPartSize > MAX_PART_SIZE) recommendedPartSize = MAX_PART_SIZE
 
@@ -87,15 +93,21 @@ async function uploadFileViaMultipart(
     progress_granularity: `${(100 / numParts).toFixed(1)}%`,
   })
 
-  // Set concurrency based on speed: slower connections → fewer concurrent parts
+  // Set concurrency based on effective per-upload speed: slower → fewer parts
   let maxConcurrent = 6
-  if (speedBps < 1 * 1024 * 1024) maxConcurrent = 3 // <1 MB/s
-  else if (speedBps < 2 * 1024 * 1024) maxConcurrent = 4
-  else if (speedBps < 5 * 1024 * 1024) maxConcurrent = 5
+  if (effectiveBps < 1 * 1024 * 1024)
+    maxConcurrent = 3 // <1 MB/s
+  else if (effectiveBps < 2 * 1024 * 1024) maxConcurrent = 4
+  else if (effectiveBps < 5 * 1024 * 1024) maxConcurrent = 5
   else maxConcurrent = 6
 
+  // Share a global concurrency budget across simultaneous uploads
+  const globalMax = Number(process.env.NEXT_PUBLIC_GLOBAL_MAX_CONCURRENT_PARTS || "8")
+  const perUploadShare = Math.max(1, Math.floor(globalMax / concurrentUploads))
+  maxConcurrent = Math.max(1, Math.min(maxConcurrent, perUploadShare))
+
   // Derive upload timeout: roughly 2x expected per-part time, with bounds
-  const expectedPartSeconds = partSize / Math.max(1, speedBps * SAFETY)
+  const expectedPartSeconds = partSize / Math.max(1, effectiveBps * SAFETY)
   const uploadTimeoutMs = Math.min(300_000, Math.max(60_000, Math.ceil(expectedPartSeconds * 2000)))
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
@@ -103,6 +115,14 @@ async function uploadFileViaMultipart(
     partSize: partSize,
     maxConcurrentParts: maxConcurrent,
     uploadTimeoutMs,
+  })
+
+  log("[MULTIPART UPLOAD] Load-aware settings", {
+    job_id: jobId,
+    concurrent_uploads: concurrentUploads,
+    effective_bps: effectiveBps,
+    per_upload_concurrency: maxConcurrent,
+    global_max_concurrency: Number(process.env.NEXT_PUBLIC_GLOBAL_MAX_CONCURRENT_PARTS || "8"),
   })
 
   // Register for cancellation
@@ -174,7 +194,7 @@ export async function uploadFileAndConvert(
   const fileKey = `${file.name}-${file.size}-${file.lastModified}`
 
   // Track if upload was cancelled
-  let uploadCancelled = false
+  const uploadCancelled = false
 
   // Check if this file is already being processed
   if (activeJobs.has(fileKey)) {
@@ -231,18 +251,20 @@ export async function uploadFileAndConvert(
           if (errorData.error) {
             errorMessage = errorData.error
 
-            // Handle 401 - Invalid session key
-            if (jobRes.status === 401 && errorData.error.includes("Invalid session key")) {
-              logWarn("Invalid session key (401), removing from localStorage and obtaining new session", {
-                error: errorData.error
+            if (
+              (jobRes.status === 401 || jobRes.status === 403) &&
+              (errorData.error.includes("Invalid session key") || errorData.error.includes("Unauthorized"))
+            ) {
+              logWarn("Invalid/unauthorized session key, clearing localStorage and obtaining fresh session", {
+                status: jobRes.status,
+                error: errorData.error,
               })
               localStorage.removeItem("mangaconverter_session_key")
 
-              // Obtain new session and retry
-              // Try to refresh, but avoid changing session room mid-flight unless necessary
+              // Obtain fresh session from backend
               const newLicenseKey = await ensureSessionKey(true)
-              log("New session obtained, retrying job creation", {
-                hasNewLicense: !!newLicenseKey
+              log("Fresh session obtained from backend, retrying job creation", {
+                hasNewLicense: !!newLicenseKey,
               })
 
               // Retry the request with new session
@@ -261,12 +283,18 @@ export async function uploadFileAndConvert(
               })
 
               if (!retryRes.ok) {
-                const retryError = await retryRes.json().catch(() => ({ error: "Failed to create job after session refresh" }))
-                throw new Error(retryError.error || `Failed to create job after session refresh (HTTP ${retryRes.status})`)
+                const retryError = await retryRes
+                  .json()
+                  .catch(() => ({ error: "Failed to create job after session refresh" }))
+                throw new Error(
+                  retryError.error || `Failed to create job after session refresh (HTTP ${retryRes.status})`,
+                )
               }
 
               const retryData = await retryRes.json()
-              log(`[${new Date().toISOString()}] POST /jobs response received after session refresh for job: ${retryData.job_id}`)
+              log(
+                `[${new Date().toISOString()}] POST /jobs response received after session refresh for job: ${retryData.job_id}`,
+              )
               log(`[TIMING] Job creation with retry took ${(performance.now() - jobCreateStart).toFixed(2)}ms`)
 
               // Update the outer sessionKey variable
@@ -291,26 +319,7 @@ export async function uploadFileAndConvert(
       return jobData
     }
 
-    let jobData = await createJob(sessionKey)
-
-    // Handle invalid session key
-    if (jobData.error === "Invalid session key. Please register first.") {
-      logWarn("Invalid session key, refreshing", jobData.job_id)
-      const newLicenseKey = await ensureSessionKey(true)
-      sessionKey = newLicenseKey
-
-      jobData = await createJob(sessionKey)
-
-      if (jobData.error) {
-        throw new Error("Failed to create job after refreshing session")
-      }
-      log(`[${new Date().toISOString()}] POST /jobs response received after session refresh for job: ${jobData.job_id}`)
-    }
-
-    // Validate jobData
-    if (!jobData.job_id) {
-      throw new Error("Invalid job creation response - missing job_id")
-    }
+    const jobData = await createJob(sessionKey)
 
     // Notify that job was created - session updates will track status immediately
     log("Job creation successful, notifying callback", jobData.job_id, {
@@ -344,7 +353,7 @@ export async function uploadFileAndConvert(
             onUploadProgress(progress, fullProgressData)
           }
         },
-        sendUploadProgress
+        sendUploadProgress,
       )
 
       const totalTime = performance.now() - startTime
@@ -361,7 +370,6 @@ export async function uploadFileAndConvert(
         job_id: jobData.job_id,
         status: "QUEUED", // Backend will transition to PROCESSING
       }
-
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       // Check if it was a user cancellation or abort

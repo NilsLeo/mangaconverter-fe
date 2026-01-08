@@ -76,6 +76,11 @@ export async function ensureSessionKey(force = false, retries = 3): Promise<stri
     throw new Error("ensureSessionKey should only be called in browser context")
   }
 
+  if (force) {
+    localStorage.removeItem(LICENSE_KEY_STORAGE_KEY)
+    log("Forced session refresh - cleared localStorage", { force })
+  }
+
   // Check localStorage first (unless forced)
   const existingKey = getSessionKey()
   if (existingKey && !force) {
@@ -93,8 +98,7 @@ export async function ensureSessionKey(force = false, retries = 3): Promise<stri
         return existingKey
       }
 
-      // If session is invalid (401/403), clear it and get a new one
-      log("Existing session invalid, requesting new one", { status: response.status })
+      log("Existing session invalid, clearing localStorage and requesting fresh session", { status: response.status })
       localStorage.removeItem(LICENSE_KEY_STORAGE_KEY)
     } catch (error) {
       // Network error - assume session might be valid and try to use it
@@ -103,7 +107,7 @@ export async function ensureSessionKey(force = false, retries = 3): Promise<stri
     }
   }
 
-  log(force ? "Forcing session key refresh" : "No session key, requesting new one", { force })
+  log(force ? "Forcing fresh session key from backend" : "No session key, requesting new one from backend", { force })
 
   // Request a new session key with retry logic
   const registerUrl = new URL("/api/register", window.location.origin).toString()
@@ -112,7 +116,7 @@ export async function ensureSessionKey(force = false, retries = 3): Promise<stri
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const url = `${registerUrl}?t=${Date.now()}`
-      log(`Registering session at URL (attempt ${attempt + 1}/${retries + 1})`, { url })
+      log(`Registering fresh session at URL (attempt ${attempt + 1}/${retries + 1})`, { url })
 
       const response = await fetch(url, {
         headers: {
@@ -140,7 +144,7 @@ export async function ensureSessionKey(force = false, retries = 3): Promise<stri
       }
 
       setSessionKey(data.session_key)
-      log(`Session key stored in localStorage`, { session_key: data.session_key })
+      log(`Fresh session key received and stored in localStorage`, { session_key: data.session_key })
       return data.session_key
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
