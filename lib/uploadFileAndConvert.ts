@@ -372,10 +372,42 @@ export async function uploadFileAndConvert(
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
+
       // Check if it was a user cancellation or abort
       if (errorMessage.includes("cancelled by user") || errorMessage.includes("Upload aborted")) {
         log("Upload cancelled by user", jobData.job_id)
         throw new Error("Upload cancelled by user")
+      }
+
+      // Check if it's an authentication error - retry entire conversion with fresh session
+      if (errorMessage.includes("Invalid session key") || errorMessage.includes("Unauthorized")) {
+        logWarn("Authentication error during upload, refreshing session and retrying entire conversion", {
+          job_id: jobData.job_id,
+          error: errorMessage,
+        })
+
+        // Clear invalid session
+        localStorage.removeItem("mangaconverter_session_key")
+
+        // Get fresh session
+        const newSessionKey = await ensureSessionKey(true)
+        log("Fresh session obtained, retrying entire conversion", {
+          hasNewSession: !!newSessionKey,
+        })
+
+        // Remove from active jobs to allow retry
+        activeJobs.delete(fileKey)
+
+        // Retry entire conversion with new session (recursive call)
+        return await uploadFileAndConvert(
+          file,
+          newSessionKey,
+          deviceProfile,
+          advancedOptions,
+          onUploadProgress,
+          onJobCreated,
+          sendUploadProgress,
+        )
       }
 
       logError("Multipart upload failed", jobData.job_id, {

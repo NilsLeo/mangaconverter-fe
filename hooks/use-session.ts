@@ -86,6 +86,29 @@ export function useSession(options: UseSessionOptions = {}) {
     }
   }, [hasInitialized, sessionKey])
 
+  const refreshSession = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+
+      let clerkToken: string | undefined
+
+      console.log("[useSession] Refreshing session (forced)")
+
+      // Force a fresh session from the backend
+      const session = await ensureSession(clerkToken, undefined, undefined, undefined)
+      console.log("[useSession] Session refreshed successfully", { session })
+      setSessionKey(session)
+      return session
+    } catch (err) {
+      console.error("[useSession] Failed to refresh session:", err)
+      setError(err instanceof Error ? err : new Error("Unknown error"))
+      throw err
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
   // Auto-initialize on mount if enabled
   useEffect(() => {
     if (autoInitialize && !hasInitialized) {
@@ -110,5 +133,6 @@ export function useSession(options: UseSessionOptions = {}) {
     error,
     isAnonymous: !clerkAuth?.isSignedIn,
     initializeSession,
+    refreshSession,
   }
 }

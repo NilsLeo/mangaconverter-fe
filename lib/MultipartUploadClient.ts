@@ -198,33 +198,13 @@ export class MultipartUploadClient {
           error: "Failed to initiate upload",
         }))
 
-        if ((response.status === 401 || response.status === 403) && retryCount === 0) {
-          log("[MULTIPART] Invalid/unauthorized session key, clearing localStorage and obtaining fresh session", {
+        // Don't retry here - let uploadFileAndConvert handle 401 errors by retrying the entire conversion
+        if (response.status === 401 || response.status === 403) {
+          log("[MULTIPART] Authentication error during upload initiate - propagating error to retry entire conversion", {
             job_id: jobId,
             status: response.status,
             error: error.error,
           })
-
-          // Remove invalid session from localStorage
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("mangaconverter_session_key")
-          }
-
-          // Import ensureSessionKey dynamically to avoid circular dependencies
-          const { ensureSessionKey } = await import("@/lib/utils")
-          // Force a fresh session from the backend
-          const newSessionKey = await ensureSessionKey(true)
-
-          // Update this client's session key
-          this.sessionKey = newSessionKey
-
-          log("[MULTIPART] Fresh session obtained, retrying initiate", {
-            job_id: jobId,
-            hasNewSession: !!newSessionKey,
-          })
-
-          // Retry with new session key
-          return attemptInitiate(1)
         }
 
         throw new Error(error.error || "Failed to initiate upload")
@@ -258,9 +238,10 @@ export class MultipartUploadClient {
           error: "Failed to fetch parts batch",
         }))
 
-        if ((response.status === 401 || response.status === 403) && retryCount === 0) {
+        // Don't retry here - let uploadFileAndConvert handle 401 errors by retrying the entire conversion
+        if (response.status === 401 || response.status === 403) {
           log(
-            "[MULTIPART] Invalid/unauthorized session key during fetch parts, clearing localStorage and obtaining fresh session",
+            "[MULTIPART] Authentication error during fetch parts - propagating error to retry entire conversion",
             {
               job_id: jobId,
               start_part: startPart,
@@ -268,27 +249,6 @@ export class MultipartUploadClient {
               error: error.error,
             },
           )
-
-          // Remove invalid session from localStorage
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("mangaconverter_session_key")
-          }
-
-          // Import ensureSessionKey dynamically to avoid circular dependencies
-          const { ensureSessionKey } = await import("@/lib/utils")
-          // Force a fresh session from the backend
-          const newSessionKey = await ensureSessionKey(true)
-
-          // Update this client's session key
-          this.sessionKey = newSessionKey
-
-          log("[MULTIPART] Fresh session obtained, retrying fetch parts", {
-            job_id: jobId,
-            hasNewSession: !!newSessionKey,
-          })
-
-          // Retry with new session key
-          return attemptFetch(1)
         }
 
         throw new Error(error.error || "Failed to fetch parts batch")

@@ -28,12 +28,15 @@ export function removeSessionKey(): void {
 /**
  * Get or create anonymous session
  * This is called on first visit for anonymous users
+ * @param force If true, always request a new session from the server
  */
-export async function getOrCreateAnonymousSession(): Promise<string> {
-  // Check if we already have a session in localStorage
-  const existingSession = getSessionKey()
-  if (existingSession) {
-    return existingSession
+export async function getOrCreateAnonymousSession(force = false): Promise<string> {
+  // Check if we already have a session in localStorage (unless forced)
+  if (!force) {
+    const existingSession = getSessionKey()
+    if (existingSession) {
+      return existingSession
+    }
   }
 
   // Create new anonymous session via backend
@@ -156,12 +159,18 @@ export async function getOrCreateUserLicense(
 /**
  * Ensure user has a valid session
  * Handles both anonymous and authenticated users
+ * @param clerkToken Clerk authentication token
+ * @param email User email
+ * @param firstName User first name
+ * @param lastName User last name
+ * @param force If true, always request a new session from the server
  */
 export async function ensureSession(
   clerkToken?: string,
   email?: string,
   firstName?: string,
-  lastName?: string
+  lastName?: string,
+  force = false
 ): Promise<string> {
   const existingSession = getSessionKey()
 
@@ -169,14 +178,15 @@ export async function ensureSession(
     hasToken: !!clerkToken,
     hasExistingSession: !!existingSession,
     existingSession: existingSession?.substring(0, 8) + '...',
-    email
+    email,
+    force
   })
 
   if (clerkToken) {
     // Authenticated user
     console.log('[ensureSession] User is authenticated')
 
-    if (existingSession) {
+    if (existingSession && !force) {
       // Try to claim the anonymous session
       console.log('[ensureSession] Attempting to claim existing session')
       try {
@@ -196,6 +206,6 @@ export async function ensureSession(
   } else {
     // Anonymous user
     console.log('[ensureSession] User is anonymous, creating anonymous session')
-    return await getOrCreateAnonymousSession()
+    return await getOrCreateAnonymousSession(force)
   }
 }
