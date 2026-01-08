@@ -212,6 +212,7 @@ export async function uploadFileAndConvert(
               localStorage.removeItem("mangaconverter_session_key")
 
               // Obtain new session and retry
+              // Try to refresh, but avoid changing session room mid-flight unless necessary
               const newLicenseKey = await ensureSessionKey(true)
               log("New session obtained, retrying job creation", {
                 hasNewLicense: !!newLicenseKey

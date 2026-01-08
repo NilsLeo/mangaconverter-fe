@@ -520,6 +520,14 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 dismissed_at: job.dismissed_at || null,
                 completed_at: job.completed_at || null,
               })
+
+              // Reset stage progress between phases to avoid backwards movement
+              if (job.status === "QUEUED" || job.status === "PROCESSING") {
+                setConversionProgress(0)
+                lastLoggedProgressRef.current = -1
+                setEta(undefined)
+                setRemainingTime(undefined)
+              }
             }
 
             const updated = {
@@ -629,6 +637,14 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               dismissed_at: statusData.dismissed_at || null,
               completed_at: statusData.completed_at || null,
             })
+
+            // Reset stage progress between phases
+            if (statusData.status === "QUEUED" || statusData.status === "PROCESSING") {
+              setConversionProgress(0)
+              lastLoggedProgressRef.current = -1
+              setEta(undefined)
+              setRemainingTime(undefined)
+            }
           }
 
           const updated: PendingUpload = {
@@ -1040,7 +1056,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       })
 
       try {
-        const sessionKey = await ensureSessionKey(true)
+        // Do not force-refresh session; forcing breaks WebSocket session subscription rooms
+        const sessionKey = await ensureSessionKey()
 
         // Reset progress states for this file
         setUploadProgress(0)
@@ -1220,46 +1237,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
           filename: currentFile.name,
         })
 
-        log(`[${new Date().toISOString()}] Starting WebSocket monitoring for job ${jobId}`)
-        log("Starting WebSocket monitoring", jobId, {
-          reason: "Real-time status updates via WebSocket",
-        })
-
-        subscribeToJob(jobId, (statusData) => {
-          log(`[WEBSOCKET] Job ${jobId} status update:`, statusData)
-
-          // Update pendingUploads with the real-time status
-          setPendingUploads((prev) => {
-            return prev.map((file) => {
-              if (file.jobId === jobId) {
-                return {
-                  ...file,
-                  status: statusData.status,
-                  // Update other fields based on status
-                  ...(statusData.status === "QUEUED" && {
-                    queuedAt: Date.now(),
-                  }),
-                  ...(statusData.status === "PROCESSING" && {
-                    processing_progress: {
-                      elapsed_seconds: statusData.elapsed_seconds || 0,
-                      remaining_seconds: statusData.remaining_seconds || 0,
-                      projected_eta: statusData.projected_eta || 0,
-                      progress_percent: statusData.progress_percent || 0,
-                    },
-                  }),
-                  ...(statusData.status === "COMPLETE" && {
-                    isConverted: true,
-                    convertedName: statusData.output_filename || file.convertedName,
-                    outputFileSize: statusData.output_file_size || 0,
-                    actualDuration: statusData.actual_duration || 0,
-                    downloadUrl: statusData.download_url, // Added download URL
-                  }),
-                }
-              }
-              return file
-            })
-          })
-        })
+        // Defer per-job subscription until after finalize (or rely on session updates only)
+        log(`[${new Date().toISOString()}] Deferring per-job subscription; session updates will track job ${jobId}`)
 
         // Start upload process in background
         const uploadCompletePromise = uploadPromise
@@ -1273,8 +1252,8 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
 
         log("Upload complete for job", jobId, { filename: currentFile.name })
 
-        // Polling will automatically update status and handle completion
-        // No need to manually update status - WebSocket hook does it all
+        // Session-based WebSocket updates (subscribe_session) will update status post-finalize
+        // No per-job subscribe needed; avoids early DB lookup race conditions
 
         // Remove the loading toast without showing an "upload complete" message
         toast.dismiss(toastId)

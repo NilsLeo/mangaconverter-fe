@@ -16,6 +16,7 @@ import {
   BookOpen,
   Cog,
   CheckCircle2,
+  AlertCircle,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { motion } from "framer-motion"
@@ -628,8 +629,13 @@ export function ConversionQueue({
   const getTimelineStage = (file: PendingUpload, index: number) => {
     const status = file.status || (isConverting && index === 0 ? currentStatus : null)
 
+    // Handle error state - show as stage 3 but mark as errored
+    if (file.error) {
+      return { stage: 3, progress: 100, label: "Error", eta: null, isError: true }
+    }
+
     // Before conversion starts - stage -1 means no active stage yet
-    if (!status) return { stage: -1, progress: 0, label: "Ready", eta: null }
+    if (!status) return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
 
     // Stage 0: Uploading (0-100% of upload)
     if (status === "UPLOADING") {
@@ -646,6 +652,7 @@ export function ConversionQueue({
         progress: safeUploadPct,
         label,
         eta: displayedUploadRemainingSec ?? uploadEta,
+        isError: false,
       }
     }
 
@@ -656,6 +663,7 @@ export function ConversionQueue({
         progress: Math.max(0, Math.min(99, clientQueuedProgress)),
         label: "Reading File",
         eta: displayedQueuedRemainingSec ?? null,
+        isError: false,
       }
     }
 
@@ -668,6 +676,7 @@ export function ConversionQueue({
           progress: Math.max(0, Math.min(99, clientProcessingProgress)),
           label: "Converting",
           eta: displayedRemainingSec ?? null,
+          isError: false,
         }
       }
       // Fallback to backend-provided processing_progress if ticker not initialized
@@ -679,31 +688,39 @@ export function ConversionQueue({
           progress: safeProgress,
           label: "Converting",
           eta: remaining_seconds ?? null,
+          isError: false,
         }
       }
-      return { stage: 2, progress: 0, label: "Converting", eta: null }
+      return { stage: 2, progress: 0, label: "Converting", eta: null, isError: false }
     }
 
     // Stage 3: Ready for Download
     if (status === "COMPLETE") {
-      return { stage: 3, progress: 100, label: "Ready for Download", eta: null }
+      return { stage: 3, progress: 100, label: "Ready for Download", eta: null, isError: false }
     }
 
-    return { stage: -1, progress: 0, label: "Ready", eta: null }
+    return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
   }
 
   const renderTimeline = (file: PendingUpload, index: number, actionButtons?: React.ReactNode) => {
-    const { stage, progress, label, eta } = getTimelineStage(file, index)
+    const { stage, progress, label, eta, isError } = getTimelineStage(file, index)
 
     const stages = [
       { icon: Upload, label: "Upload", shortLabel: "Upload", active: stage >= 0 },
       { icon: BookOpen, label: "Reading", shortLabel: "Read", active: stage >= 1 },
       { icon: Cog, label: "Converting", shortLabel: "Convert", active: stage >= 2 },
-      { icon: CheckCircle2, label: "Complete", shortLabel: "Done", active: stage >= 3 },
+      {
+        icon: isError ? AlertCircle : CheckCircle2,
+        label: isError ? "Error" : "Complete",
+        shortLabel: isError ? "Error" : "Done",
+        active: stage >= 3,
+      },
     ]
 
     // Each stage shows its own 100% progress bar when active
     const currentStageProgress = stage >= 0 && stage < stages.length ? progress : 0
+    const isCompleted = stage >= 3 && !isError
+    const isErrored = stage >= 3 && isError
 
     return (
       <div className="w-full">
@@ -713,12 +730,13 @@ export function ConversionQueue({
             <div className="flex items-center gap-2.5 min-w-0 flex-1">
               {(() => {
                 const CurrentIcon = stages[Math.max(0, stage)]?.icon || Upload
-                const isActive = stage >= 0
+                const isActive = stage >= 0 && stage < 3
+                const isFinished = stage >= 3
                 return (
                   <div
                     className={`
                       rounded-full p-2 flex-shrink-0 transition-all
-                      ${isActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}
+                      ${isActive ? "bg-primary text-primary-foreground" : isFinished && isError ? "bg-destructive text-destructive-foreground" : isFinished ? "bg-green-500 text-white" : "bg-muted text-muted-foreground"}
                     `}
                   >
                     <CurrentIcon className={`h-4 w-4 ${isActive ? "animate-pulse" : ""}`} />
@@ -727,11 +745,11 @@ export function ConversionQueue({
               })()}
               <div className="min-w-0 flex-1">
                 <span
-                  className={`text-sm font-medium text-foreground block truncate ${stage >= 0 && stage < stages.length && stages[stage] ? "" : stage >= stages.length ? "line-through opacity-60" : ""}`}
+                  className={`text-sm font-medium text-foreground block truncate ${stage >= 3 ? "line-through opacity-60" : ""}`}
                 >
                   {stages[Math.max(0, Math.min(stage, stages.length - 1))]?.label || "Ready"}
                 </span>
-                {stage >= 0 && (
+                {stage >= 0 && stage < 3 && (
                   <span className="text-xs text-muted-foreground">
                     {Math.round(currentStageProgress)}%{eta != null && eta > 0 && ` · ${formatTime(eta)}`}
                   </span>
@@ -742,7 +760,7 @@ export function ConversionQueue({
             {actionButtons && <div className="flex-shrink-0">{actionButtons}</div>}
           </div>
 
-          {stage >= 0 && stage < stages.length && (
+          {stage >= 0 && stage < 3 && (
             <div className="relative pt-1 pb-1">
               {/* Track background */}
               <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
@@ -792,14 +810,14 @@ export function ConversionQueue({
           {/* Stage labels row */}
           <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0">
             {stages.map((s, i) => {
-              const isCompleted = i < stage
+              const isStageCompleted = stage >= 3 ? true : i < stage
               return (
                 <span
                   key={i}
                   className={`
                   transition-colors text-center w-12
-                  ${i === stage ? "text-foreground font-medium" : ""}
-                  ${isCompleted ? "line-through opacity-60" : ""}
+                  ${i === stage && stage < 3 ? "text-foreground font-medium" : ""}
+                  ${isStageCompleted ? "line-through opacity-60" : ""}
                 `}
                 >
                   {s.shortLabel}
@@ -819,6 +837,7 @@ export function ConversionQueue({
           )}
         </div>
 
+        {/* Desktop timeline */}
         <div className="hidden sm:block">
           <div className="flex items-start gap-4">
             {/* Timeline stages */}
@@ -837,9 +856,9 @@ export function ConversionQueue({
                 {/* Stage nodes */}
                 {stages.map((s, i) => {
                   const Icon = s.icon
-                  const isCurrentStage = i === stage
-                  const isPastStage = i < stage
-                  const isFutureStage = i > stage
+                  const isCurrentStage = i === stage && stage < 3
+                  const isPastStage = stage >= 3 ? true : i < stage
+                  const isFutureStage = i > stage && stage < 3
 
                   return (
                     <div key={i} className="flex flex-col items-center">
@@ -851,13 +870,15 @@ export function ConversionQueue({
                           ${
                             isCurrentStage
                               ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/25"
-                              : isPastStage
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-muted bg-background text-muted-foreground"
+                              : isPastStage && isError && i === 3
+                                ? "border-destructive bg-destructive text-destructive-foreground"
+                                : isPastStage
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-muted bg-background text-muted-foreground"
                           }
                         `}
                       >
-                        {isPastStage ? (
+                        {isPastStage && i < 3 ? (
                           <CheckCircle2 className="h-5 w-5" />
                         ) : (
                           <Icon className={`h-5 w-5 ${isCurrentStage ? "animate-pulse" : ""}`} />
@@ -870,7 +891,7 @@ export function ConversionQueue({
                           className={`
                             text-xs font-medium transition-colors block
                             ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
-                            ${isPastStage ? "line-through opacity-60" : ""}
+                            ${stage >= 3 ? "line-through opacity-60" : isPastStage && i < stage ? "line-through opacity-60" : ""}
                           `}
                         >
                           <span className="hidden lg:inline">{s.label}</span>
@@ -890,7 +911,7 @@ export function ConversionQueue({
                 })}
               </div>
 
-              {stage >= 0 && stage < stages.length && (
+              {stage >= 0 && stage < 3 && (
                 <div className="mt-4 mx-5">
                   <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
                     {/* Upload stage: show dual layers for sent/received */}
@@ -1084,7 +1105,7 @@ export function ConversionQueue({
         const progressInfo = getProgressInfo(file, index)
         const isActive = isConverting && index === 0
         const jobRunning = isJobRunning(file)
-        const { stage, progress, label, eta } = getTimelineStage(file, index)
+        const { stage, progress, label, eta, isError } = getTimelineStage(file, index)
 
         return (
           <motion.div
@@ -1182,8 +1203,7 @@ export function ConversionQueue({
                 )}
 
                 {/* Timeline with inline action buttons */}
-                {!file.error &&
-                  !file.isConverted &&
+                {!file.isConverted &&
                   renderTimeline(
                     file,
                     index,
@@ -1192,6 +1212,34 @@ export function ConversionQueue({
                         const isCancelling = file.jobId ? cancellingJobs.has(file.jobId) : false
                         const isDismissing = file.jobId ? dismissingJobs.has(file.jobId) : false
                         const isLoading = isCancelling || isDismissing
+
+                        if (file.error) {
+                          return (
+                            <TooltipProvider delayDuration={0}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => onDismissJob?.(file)}
+                                    disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
+                                    className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                  >
+                                    {file.jobId && dismissingJobs.has(file.jobId) ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <X className="h-4 w-4" />
+                                    )}
+                                    <span className="sr-only">Dismiss</span>
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="left">
+                                  <p>Dismiss from list</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
+                        }
 
                         if (jobRunning && onCancelJob) {
                           return (
@@ -1259,9 +1307,10 @@ export function ConversionQueue({
                     </>,
                   )}
 
-                {file.isConverted && (
-                  <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/50">
-                    <span className="text-xs text-muted-foreground">Ready to download</span>
+                {file.isConverted &&
+                  renderTimeline(
+                    file,
+                    index,
                     <div className="flex items-center gap-2">
                       <Button
                         onClick={() => downloadFile(file)}
@@ -1304,9 +1353,8 @@ export function ConversionQueue({
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
-                    </div>
-                  </div>
-                )}
+                    </div>,
+                  )}
               </div>
             </Card>
           </motion.div>

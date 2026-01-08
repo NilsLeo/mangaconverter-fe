@@ -87,6 +87,19 @@ export function useJobWebSocket(apiUrl: string): UseJobWebSocketReturn {
 
     newSocket.on('error', (error) => {
       logError('[WebSocket] Error:', error)
+      // If backend reports job not found during early subscribe, retry shortly
+      try {
+        const msg = typeof error === 'string' ? error : error?.message
+        if (msg && typeof msg === 'string' && msg.toLowerCase().includes('job') && msg.toLowerCase().includes('not found')) {
+          // Attempt to resubscribe to any jobs after a short delay
+          setTimeout(() => {
+            subscriptions.current.forEach((_, jobId) => {
+              log(`[WebSocket] Retry subscribing to job ${jobId}`)
+              newSocket.emit('subscribe_job', { job_id: jobId })
+            })
+          }, 1500)
+        }
+      } catch {}
     })
 
     newSocket.on('reconnect_attempt', (attemptNumber) => {
