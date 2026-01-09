@@ -389,9 +389,9 @@ export async function uploadFileAndConvert(
         throw new Error("Upload cancelled by user")
       }
 
-      // Check if it's an authentication error - retry entire conversion with fresh session
+      // Check if it's an authentication error - reload the page to get a fresh session
       if (errorMessage.includes("Invalid session key") || errorMessage.includes("Unauthorized")) {
-        logWarn("Authentication error during upload, refreshing session and retrying entire conversion", {
+        logWarn("Authentication error during upload, reloading page to refresh session", {
           job_id: jobData.job_id,
           error: errorMessage,
         })
@@ -399,25 +399,11 @@ export async function uploadFileAndConvert(
         // Clear invalid session
         localStorage.removeItem("mangaconverter_session_key")
 
-        // Get fresh session
-        const newSessionKey = await ensureSessionKey(true)
-        log("Fresh session obtained, retrying entire conversion", {
-          hasNewSession: !!newSessionKey,
-        })
+        // Reload the page to get fresh session and clean state
+        window.location.reload()
 
-        // Remove from active jobs to allow retry
-        activeJobs.delete(fileKey)
-
-        // Retry entire conversion with new session (recursive call)
-        return await uploadFileAndConvert(
-          file,
-          newSessionKey,
-          deviceProfile,
-          advancedOptions,
-          onUploadProgress,
-          onJobCreated,
-          sendUploadProgress,
-        )
+        // This won't be reached, but TypeScript needs a return
+        return { job_id: jobData.job_id, status: "RELOADING" }
       }
 
       logError("Multipart upload failed", jobData.job_id, {

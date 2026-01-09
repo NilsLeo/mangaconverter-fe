@@ -137,6 +137,31 @@ export function useSession(options: UseSessionOptions = {}) {
     }
   }, [sessionKey])
 
+  // Listen for localStorage changes (when session changes in same tab)
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const newSession = getSessionKey()
+      if (newSession && newSession !== sessionKey) {
+        console.log("[useSession] Session changed in localStorage, updating", {
+          old: sessionKey?.substring(0, 8),
+          new: newSession.substring(0, 8),
+        })
+        setSessionKey(newSession)
+      }
+    }
+
+    // Check periodically for localStorage changes (storage event doesn't fire in same tab)
+    const interval = setInterval(handleStorageChange, 1000)
+
+    // Also listen for storage events from other tabs
+    window.addEventListener("storage", handleStorageChange)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener("storage", handleStorageChange)
+    }
+  }, [sessionKey])
+
   return {
     sessionKey,
     isLoading,
