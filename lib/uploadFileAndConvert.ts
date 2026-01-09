@@ -108,7 +108,14 @@ async function uploadFileViaMultipart(
 
   // Derive upload timeout: roughly 3x expected per-part time to account for S3 latency, with bounds
   const expectedPartSeconds = partSize / Math.max(1, effectiveBps * SAFETY)
-  const uploadTimeoutMs = Math.min(300_000, Math.max(180_000, Math.ceil(expectedPartSeconds * 3000)))
+  const calculatedTimeout = Math.ceil(expectedPartSeconds * 3000)
+
+  // Allow override via env var, otherwise use calculated timeout with bounds (180s - 300s)
+  const envTimeout = process.env.NEXT_PUBLIC_UPLOAD_TIMEOUT_MS
+    ? Number(process.env.NEXT_PUBLIC_UPLOAD_TIMEOUT_MS)
+    : null
+
+  const uploadTimeoutMs = envTimeout || Math.min(300_000, Math.max(180_000, calculatedTimeout))
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8060"
   const client = new MultipartUploadClient(apiUrl, sessionKey, {
@@ -125,6 +132,7 @@ async function uploadFileViaMultipart(
     global_max_concurrency: Number(process.env.NEXT_PUBLIC_GLOBAL_MAX_CONCURRENT_PARTS || "8"),
     upload_timeout_ms: uploadTimeoutMs,
     upload_timeout_seconds: Math.round(uploadTimeoutMs / 1000),
+    timeout_source: envTimeout ? "env_var" : "calculated",
   })
 
   // Register for cancellation
