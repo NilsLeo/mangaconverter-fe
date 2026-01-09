@@ -111,9 +111,9 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
           )}
 
           {isOtherProfile && allRequiredFieldsFilled && (
-            <Alert className="border-green-200 bg-green-50 dark:bg-green-950/20">
-              <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-              <AlertDescription className="text-sm font-medium text-green-800 dark:text-green-200 ml-2">
+            <Alert variant="success">
+              <CheckCircle2 className="h-5 w-5" />
+              <AlertDescription className="text-sm font-medium ml-2">
                 All required fields configured correctly
               </AlertDescription>
             </Alert>
@@ -138,7 +138,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       isOtherProfile && !hasCustomWidth
                         ? "text-warning"
                         : hasCustomWidth && isOtherProfile
-                          ? "text-green-600 dark:text-green-400"
+                          ? "text-success"
                           : ""
                     }`}
                   >
@@ -155,9 +155,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  {hasCustomWidth && isOtherProfile && (
-                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 ml-auto" />
-                  )}
+                  {hasCustomWidth && isOtherProfile && <CheckCircle2 className="h-4 w-4 text-success ml-auto" />}
                 </div>
                 <Input
                   id="custom-width"
@@ -171,7 +169,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                     isOtherProfile && !hasCustomWidth
                       ? "border-warning focus-visible:ring-warning"
                       : hasCustomWidth && isOtherProfile
-                        ? "border-green-500 focus-visible:ring-green-500"
+                        ? "border-success focus-visible:ring-success"
                         : ""
                   }`}
                 />
@@ -185,7 +183,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       isOtherProfile && !hasCustomHeight
                         ? "text-warning"
                         : hasCustomHeight && isOtherProfile
-                          ? "text-green-600 dark:text-green-400"
+                          ? "text-success"
                           : ""
                     }`}
                   >
@@ -202,9 +200,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  {hasCustomHeight && isOtherProfile && (
-                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 ml-auto" />
-                  )}
+                  {hasCustomHeight && isOtherProfile && <CheckCircle2 className="h-4 w-4 text-success ml-auto" />}
                 </div>
                 <Input
                   id="custom-height"
@@ -218,7 +214,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                     isOtherProfile && !hasCustomHeight
                       ? "border-warning focus-visible:ring-warning"
                       : hasCustomHeight && isOtherProfile
-                        ? "border-green-500 focus-visible:ring-green-500"
+                        ? "border-success focus-visible:ring-success"
                         : ""
                   }`}
                 />
@@ -402,7 +398,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       isOtherProfile && !hasValidOutputFormat
                         ? "text-warning"
                         : hasValidOutputFormat && isOtherProfile
-                          ? "text-green-600 dark:text-green-400"
+                          ? "text-success"
                           : ""
                     }`}
                   >
@@ -421,9 +417,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  {hasValidOutputFormat && isOtherProfile && (
-                    <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 ml-auto" />
-                  )}
+                  {hasValidOutputFormat && isOtherProfile && <CheckCircle2 className="h-4 w-4 text-success ml-auto" />}
                 </div>
                 <Select
                   value={options.outputFormat}
@@ -436,7 +430,7 @@ export function AdvancedOptions({ options, onChange, deviceProfile, contentType 
                       isOtherProfile && !hasValidOutputFormat
                         ? "border-warning focus:ring-warning"
                         : hasValidOutputFormat && isOtherProfile
-                          ? "border-green-500 focus:ring-green-500"
+                          ? "border-success focus:ring-success"
                           : ""
                     }`}
                   >
@@ -504,8 +498,8 @@ function OptionCheckbox({
 }: OptionCheckboxProps) {
   const isComic = contentType === "comic"
   const checkboxClassName = isComic
-    ? "!border-yellow-500 data-[state=checked]:!bg-yellow-500 data-[state=checked]:!border-yellow-500 focus-visible:!ring-yellow-500"
-    : "!border-red-600 data-[state=checked]:!bg-red-600 data-[state=checked]:!border-red-600 focus-visible:!ring-red-600"
+    ? "!border-theme-medium data-[state=checked]:!bg-theme-medium data-[state=checked]:!border-theme-medium focus-visible:!ring-theme-medium"
+    : "!border-theme-dark data-[state=checked]:!bg-theme-dark data-[state=checked]:!border-theme-dark focus-visible:!ring-theme-dark"
 
   const renderNotice = () => {
     if (!notice) return null

@@ -465,8 +465,9 @@ export function ConversionQueue({
     pendingUploads.forEach((file) => {
       const jobId = file.jobId || ""
       const uploadProgress = file.upload_progress?.percentage || 0
-      const uploadedBytes = file.upload_progress?.uploaded_bytes || 0
-      const totalBytes = file.upload_progress?.total_bytes || file.size
+      const uploadProgressConfirmed = (file.upload_progress as any)?.confirmed_percentage || uploadProgress
+      const eta = jobUploadEtas.get(jobId)
+      const speed = jobUploadSpeeds.get(jobId) || 0
 
       // Initialize tracking for new uploads
       if (uploadProgress === 0 && !jobUploadStartTimes.has(jobId)) {
@@ -487,8 +488,9 @@ export function ConversionQueue({
         const progressDiff = uploadProgress - lastProgress
 
         if (timeDiff > 0 && progressDiff > 0) {
-          const bytesUploaded = (progressDiff / 100) * totalBytes
-          const instSpeed = bytesUploaded / timeDiff
+          const totalBytes = file.size // Total size of the file
+          const uploadedBytes = (progressDiff / 100) * totalBytes // Bytes uploaded in this interval
+          const instSpeed = uploadedBytes / timeDiff
 
           // Append sample to history
           setJobSpeedHistories((prev) => {
@@ -522,7 +524,7 @@ export function ConversionQueue({
             // Persist latest median upload speed for dynamic part sizing in future uploads
             try {
               if (med > 0) {
-                localStorage.setItem('upload_speed_bps', String(Math.floor(med)))
+                localStorage.setItem("upload_speed_bps", String(Math.floor(med)))
               }
             } catch {}
           }
@@ -599,7 +601,7 @@ export function ConversionQueue({
       return (
         <Badge
           variant="secondary"
-          className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+          className="uppercase text-xs font-medium bg-success/10 text-green-600 dark:text-green-400 border-success/20"
         >
           Complete
         </Badge>
@@ -632,7 +634,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+              className="uppercase text-xs font-medium bg-red-400/10 text-red-500 dark:text-red-400 border-red-400/20"
             >
               Uploading
             </Badge>
@@ -641,7 +643,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+              className="uppercase text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-500 border-red-500/20"
             >
               Converting
             </Badge>
@@ -650,7 +652,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+              className="uppercase text-xs font-medium bg-red-600/10 text-red-700 dark:text-red-600 border-red-600/20"
             >
               Converting
             </Badge>
@@ -659,7 +661,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20"
+              className="uppercase text-xs font-medium bg-red-700/10 text-red-800 dark:text-red-700 border-red-700/20"
             >
               Finished
             </Badge>
@@ -676,7 +678,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20"
+              className="uppercase text-xs font-medium bg-red-400/10 text-red-500 dark:text-red-400 border-red-400/20"
             >
               Uploading
             </Badge>
@@ -685,7 +687,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+              className="uppercase text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-500 border-red-500/20"
             >
               Converting
             </Badge>
@@ -694,7 +696,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20"
+              className="uppercase text-xs font-medium bg-red-600/10 text-red-700 dark:text-red-600 border-red-600/20"
             >
               Converting
             </Badge>
@@ -703,7 +705,7 @@ export function ConversionQueue({
           return (
             <Badge
               variant="secondary"
-              className="uppercase text-xs font-medium bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20"
+              className="uppercase text-xs font-medium bg-red-700/10 text-red-800 dark:text-red-700 border-red-700/20"
             >
               Finished
             </Badge>
@@ -804,6 +806,51 @@ export function ConversionQueue({
     return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
   }
 
+  const getStageColors = (stageIndex: number) => {
+    switch (stageIndex) {
+      case 0: // Upload - lightest
+        return {
+          light: "bg-theme-lightest/40",
+          dark: "bg-theme-lightest",
+          icon: "text-theme-light",
+          border: "border-theme-lightest",
+          bg: "bg-theme-lightest",
+        }
+      case 1: // Reading - light
+        return {
+          light: "bg-theme-light/40",
+          dark: "bg-theme-light",
+          icon: "text-theme-medium",
+          border: "border-theme-light",
+          bg: "bg-theme-light",
+        }
+      case 2: // Converting - medium
+        return {
+          light: "bg-theme-medium/40",
+          dark: "bg-theme-medium",
+          icon: "text-theme-dark",
+          border: "border-theme-medium",
+          bg: "bg-theme-medium",
+        }
+      case 3: // Complete - dark
+        return {
+          light: "bg-theme-dark/40",
+          dark: "bg-theme-dark",
+          icon: "text-theme-darker",
+          border: "border-theme-dark",
+          bg: "bg-theme-dark",
+        }
+      default:
+        return {
+          light: "bg-muted",
+          dark: "bg-primary",
+          icon: "text-muted-foreground",
+          border: "border-muted",
+          bg: "bg-muted",
+        }
+    }
+  }
+
   const renderTimeline = (file: PendingUpload, index: number, actionButtons?: React.ReactNode) => {
     const { stage, progress, label, eta, isError } = getTimelineStage(file, index)
 
@@ -846,6 +893,7 @@ export function ConversionQueue({
                   const isCurrentStage = i === stage && stage < 3
                   const isPastStage = stage >= 3 ? true : i < stage
                   const isFutureStage = i > stage && stage < 3
+                  const colors = getStageColors(i)
 
                   return (
                     <div key={i} className="flex flex-col items-center">
@@ -856,11 +904,11 @@ export function ConversionQueue({
                           w-8 h-8 rounded-full border-2 transition-all duration-300
                           ${
                             isCurrentStage
-                              ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                              ? `${colors.border} ${colors.bg} text-white shadow-md`
                               : isPastStage && isError && i === 3
                                 ? "border-destructive bg-destructive text-destructive-foreground"
                                 : isPastStage
-                                  ? "border-primary bg-primary/10 text-primary"
+                                  ? `${colors.border} ${colors.bg}/10 ${colors.icon}`
                                   : "border-muted bg-background text-muted-foreground"
                           }
                         `}
@@ -898,12 +946,21 @@ export function ConversionQueue({
           {stage >= 0 && stage < 3 && (
             <div className="space-y-2">
               <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-                {/* Upload stage: show dual layers for sent/received */}
+                {/* Render all completed previous stages at 100% with reduced opacity */}
+                {Array.from({ length: stage }).map((_, i) => (
+                  <div
+                    key={`completed-stage-${i}`}
+                    className={`absolute inset-y-0 left-0 ${getStageColors(i).dark} opacity-60 rounded-full`}
+                    style={{ width: "100%" }}
+                  />
+                ))}
+
+                {/* Current stage progress bar */}
                 {stage === 0 && file.status === "UPLOADING" ? (
                   <>
                     {/* Light layer: total sent */}
                     <div
-                      className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
+                      className={`absolute inset-y-0 left-0 ${getStageColors(0).light} rounded-full transition-all duration-300`}
                       style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                     />
                     {/* Dark layer: confirmed received */}
@@ -912,7 +969,7 @@ export function ConversionQueue({
                         (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
                       return confirmed !== undefined && confirmed > 0 ? (
                         <div
-                          className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                          className={`absolute inset-y-0 left-0 ${getStageColors(0).dark} rounded-full transition-all duration-300`}
                           style={{ width: `${Math.min(100, confirmed)}%` }}
                         />
                       ) : null
@@ -920,7 +977,7 @@ export function ConversionQueue({
                   </>
                 ) : (
                   <div
-                    className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                    className={`absolute inset-y-0 left-0 ${getStageColors(stage).dark} rounded-full transition-all duration-500 ease-out`}
                     style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                   />
                 )}
@@ -931,20 +988,19 @@ export function ConversionQueue({
                 {stage === 0 && file.status === "UPLOADING" ? (
                   <>
                     <span>
-                      Sent: {Math.round(currentStageProgress)}%
-                      {(() => {
+                      Sent: {Math.round(currentStageProgress)}%{(() => {
                         const confirmed =
                           (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
                         return confirmed !== undefined && confirmed > 0 ? (
-                          <span className="ml-1.5 text-primary hidden xs:inline">· Confirmed: {Math.round(confirmed)}%</span>
+                          <span className="ml-1.5 text-primary hidden xs:inline">
+                            · Confirmed: {Math.round(confirmed)}%
+                          </span>
                         ) : null
                       })()}
                     </span>
                     {(() => {
                       const speed = jobUploadSpeeds.get(file.jobId || file.job_id || "") ?? 0
-                      return speed > 0 ? (
-                        <span className="hidden xs:inline">{formatUploadSpeed(speed)}</span>
-                      ) : null
+                      return speed > 0 ? <span className="hidden xs:inline">{formatUploadSpeed(speed)}</span> : null
                     })()}
                   </>
                 ) : (
@@ -982,6 +1038,7 @@ export function ConversionQueue({
                   const isCurrentStage = i === stage && stage < 3
                   const isPastStage = stage >= 3 ? true : i < stage
                   const isFutureStage = i > stage && stage < 3
+                  const colors = getStageColors(i)
 
                   return (
                     <div key={i} className="flex flex-col items-center">
@@ -992,11 +1049,11 @@ export function ConversionQueue({
                           w-10 h-10 rounded-full border-2 transition-all duration-300
                           ${
                             isCurrentStage
-                              ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                              ? `${colors.border} ${colors.bg} text-white shadow-md`
                               : isPastStage && isError && i === 3
                                 ? "border-destructive bg-destructive text-destructive-foreground"
                                 : isPastStage
-                                  ? "border-primary bg-primary/10 text-primary"
+                                  ? `${colors.border} ${colors.bg}/10 ${colors.icon}`
                                   : "border-muted bg-background text-muted-foreground"
                           }
                         `}
@@ -1037,12 +1094,21 @@ export function ConversionQueue({
               {stage >= 0 && stage < 3 && (
                 <div className="mt-4 mx-5">
                   <div className="relative h-2 md:h-1.5 bg-muted rounded-full overflow-hidden">
-                    {/* Upload stage: show dual layers for sent/received */}
+                    {/* Render all completed previous stages at 100% with reduced opacity */}
+                    {Array.from({ length: stage }).map((_, i) => (
+                      <div
+                        key={`completed-stage-desktop-${i}`}
+                        className={`absolute inset-y-0 left-0 ${getStageColors(i).dark} opacity-60 rounded-full`}
+                        style={{ width: "100%" }}
+                      />
+                    ))}
+
+                    {/* Current stage progress */}
                     {stage === 0 && file.status === "UPLOADING" ? (
                       <>
                         {/* Light layer: sent bytes */}
                         <div
-                          className="absolute inset-y-0 left-0 bg-primary/40 rounded-full transition-all duration-300"
+                          className={`absolute inset-y-0 left-0 ${getStageColors(0).light} rounded-full transition-all duration-300`}
                           style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                         />
                         {/* Dark layer: confirmed received */}
@@ -1051,7 +1117,7 @@ export function ConversionQueue({
                             (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
                           return confirmed !== undefined && confirmed > 0 ? (
                             <div
-                              className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300"
+                              className={`absolute inset-y-0 left-0 ${getStageColors(0).dark} rounded-full transition-all duration-300`}
                               style={{ width: `${Math.min(100, confirmed)}%` }}
                             />
                           ) : null
@@ -1059,7 +1125,7 @@ export function ConversionQueue({
                       </>
                     ) : (
                       <div
-                        className="h-full bg-primary rounded-full transition-all duration-300"
+                        className={`absolute inset-y-0 left-0 ${getStageColors(stage).dark} rounded-full transition-all duration-300`}
                         style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                       />
                     )}
@@ -1068,8 +1134,7 @@ export function ConversionQueue({
                     {stage === 0 && file.status === "UPLOADING" ? (
                       <>
                         <span>
-                          Sent: {Math.round(currentStageProgress)}%
-                          {(() => {
+                          Sent: {Math.round(currentStageProgress)}%{(() => {
                             const confirmed =
                               (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
                             return confirmed !== undefined && confirmed > 0 ? (
@@ -1079,9 +1144,7 @@ export function ConversionQueue({
                         </span>
                         {(() => {
                           const speed = jobUploadSpeeds.get(file.jobId || file.job_id || "") ?? 0
-                          return speed > 0 ? (
-                            <span className="hidden sm:inline">{formatUploadSpeed(speed)}</span>
-                          ) : null
+                          return speed > 0 ? <span className="hidden sm:inline">{formatUploadSpeed(speed)}</span> : null
                         })()}
                       </>
                     ) : (
@@ -1156,7 +1219,7 @@ export function ConversionQueue({
       }
     }
 
-    // Fallback to global status for first item when converting (backward compatibility)
+    // Fallback to global status for first item when converting
     if (!isConverting || index !== 0 || currentStatus === "COMPLETE") {
       // No progress for files that haven't started
       return null
@@ -1251,12 +1314,12 @@ export function ConversionQueue({
           >
             <Card
               className={`
-                transition-all duration-200
+                transition-all group hover:scale-[1.005]
                 ${
                   file.error
-                    ? "border-destructive/50 bg-destructive/5"
+                    ? "border-danger/50 bg-danger/5"
                     : file.isConverted
-                      ? "border-green-500/50 bg-green-500/5"
+                      ? "border-success/50 bg-success/5"
                       : "hover:border-muted-foreground/30"
                 }
               `}
@@ -1267,13 +1330,13 @@ export function ConversionQueue({
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <div
                       className={`
-                      rounded-lg p-2.5 flex-shrink-0 transition-colors
+                      w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0
                       ${
                         file.isConverted
-                          ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                          ? "bg-success/10 text-success dark:text-success"
                           : file.error
-                            ? "bg-destructive/10 text-destructive"
-                            : "bg-muted text-muted-foreground"
+                            ? "bg-danger/10 text-danger"
+                            : "bg-muted"
                       }
                     `}
                     >

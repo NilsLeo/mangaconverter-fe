@@ -15,9 +15,7 @@ export function SupportCard() {
       <CardHeader>
         <div className="flex items-center gap-2">
           <HeadphonesIcon className="h-5 w-5 text-foreground" />
-          <CardTitle className="flex items-center gap-2">
-            Need Help?
-          </CardTitle>
+          <CardTitle className="flex items-center gap-2">Need Help?</CardTitle>
         </div>
         <CardDescription>
           Have a question or need assistance? Our support team is here to help you get the most out of MangaConverter.
@@ -26,7 +24,7 @@ export function SupportCard() {
       <CardContent>
         <Button
           onClick={handleEmailClick}
-          className="w-full gap-2 text-base font-semibold bg-blue-600 hover:bg-blue-700"
+          className="w-full gap-2 text-base font-semibold bg-theme-dark hover:bg-theme-darker"
           size="lg"
         >
           <Mail className="h-5 w-5" />

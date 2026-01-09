@@ -867,13 +867,12 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 ),
               )
 
-              // Log upload progress at 10% intervals (0%, 10%, 20%, ..., 100%)
               const currentPercent = Math.floor(progress)
-              const currentTenth = Math.floor(currentPercent / 10) * 10
-              if (currentTenth !== lastLoggedProgressRef.current && currentTenth >= 0 && currentTenth <= 100) {
-                lastLoggedProgressRef.current = currentTenth
-                log(`[UI] Uploading progress: ${currentTenth}%`, {
-                  progress_percent: currentTenth,
+              const currentInterval = Math.floor(currentPercent / 20) * 20
+              if (currentInterval !== lastLoggedProgressRef.current && currentInterval >= 0 && currentInterval <= 100) {
+                lastLoggedProgressRef.current = currentInterval
+                log(`[UI] Uploading progress: ${currentInterval}%`, {
+                  progress_percent: currentInterval,
                   raw_progress: progress.toFixed(2),
                   completed_parts: fullProgressData?.completedParts,
                   total_parts: fullProgressData?.totalParts,
@@ -1266,7 +1265,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-300",
                 "font-bungee tracking-wide",
                 mode === "comic"
-                  ? "bg-yellow-500 text-black shadow-md scale-105"
+                  ? "bg-theme-medium text-white shadow-md scale-105"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
               )}
             >
@@ -1279,7 +1278,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
                 "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-300",
                 "font-kosugi-maru",
                 mode === "manga"
-                  ? "bg-red-600 text-white shadow-md scale-105"
+                  ? "bg-theme-dark text-white shadow-md scale-105"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
               )}
             >
@@ -1471,7 +1470,9 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
               disabled={!areSettingsValid()}
               size="lg"
               className={`w-full ${
-                isComic ? "bg-yellow-500 hover:bg-yellow-600 text-black" : "bg-red-600 hover:bg-red-700 text-white"
+                isComic
+                  ? "bg-theme-medium hover:bg-theme-dark text-white"
+                  : "bg-theme-dark hover:bg-theme-darker text-white"
               }`}
             >
               Apply Settings

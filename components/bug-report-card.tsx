@@ -29,7 +29,7 @@ export function BugReportCard() {
       <CardContent>
         <Button
           onClick={handleEmailClick}
-          className="w-full gap-2 text-base font-semibold bg-orange-600 hover:bg-orange-700"
+          className="w-full gap-2 text-base font-semibold bg-theme-medium hover:bg-theme-dark"
           size="lg"
         >
           <Mail className="h-5 w-5" />

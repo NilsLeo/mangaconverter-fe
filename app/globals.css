@@ -40,6 +40,23 @@
 
     --warning: 0 0% 100%;
     --warning-foreground: 222.2 84% 4.9%;
+
+    /* Centralized theme colors for easy modification */
+    /* Increased contrast between purple shades for better visual distinction */
+    --theme-lightest: 270 95% 88%; /* #e9d5ff - Stage 1: Upload/Sent - much lighter */
+    --theme-light: 266 85% 76%; /* #a78bfa - Stage 2: Reading/Received */
+    --theme-medium: 262 83% 58%; /* #7c3aed - Stage 3: Converting/Primary - darker */
+    --theme-dark: 263 70% 45%; /* #5b21b6 - Stage 4: Complete/Dark - much darker */
+    --theme-darker: 262 69% 38%; /* #4c1d95 - Extra dark shade */
+    --theme-darkest: 263 69% 30%; /* #3b0764 - Darkest shade */
+    --theme-extra-dark: 262 80% 22%; /* #2e1065 - Extra darkest */
+
+    /* Added success and danger states */
+    --success: 142 76% 36%; /* #16a34a - Green for success */
+    --success-foreground: 0 0% 100%; /* White text */
+
+    --danger: 0 72% 51%; /* #dc2626 - Red for danger/failure */
+    --danger-foreground: 0 0% 100%; /* White text */
   }
 
   .dark {
@@ -77,52 +94,68 @@
 
     --warning: 0 0% 100%;
     --warning-foreground: 222.2 84% 4.9%;
+
+    /* Dark mode theme colors with increased contrast */
+    --theme-lightest: 270 95% 88%;
+    --theme-light: 266 85% 76%;
+    --theme-medium: 262 83% 58%;
+    --theme-dark: 263 70% 45%;
+    --theme-darker: 262 69% 38%;
+    --theme-darkest: 263 69% 30%;
+    --theme-extra-dark: 262 80% 22%;
+
+    /* Success and danger states for dark mode */
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --danger: 0 63% 45%;
+    --danger-foreground: 0 0% 100%;
   }
 
-  /* Comic theme - changed from blue to comic book yellow */
+  /* Comic theme - updated to use purple theme colors */
   .comic-theme {
-    --primary: 45 98% 54%;
-    --primary-rgb: 253, 184, 19;
-    --primary-foreground: 0 0% 0%;
+    --primary: var(--theme-dark);
+    --primary-rgb: 124, 58, 237;
+    --primary-foreground: 255 255 255;
 
-    --accent: 45 93% 58%;
-    --accent-foreground: 0 0% 0%;
+    --accent: var(--theme-dark);
+    --accent-foreground: 255 255 255;
 
-    --ring: 45 98% 54%;
+    --ring: var(--theme-dark);
   }
 
   .dark .comic-theme {
-    --primary: 45 98% 54%;
-    --primary-rgb: 253, 184, 19;
-    --primary-foreground: 0 0% 0%;
+    --primary: var(--theme-dark);
+    --primary-rgb: 124, 58, 237;
+    --primary-foreground: 255 255 255;
 
-    --accent: 45 93% 58%;
-    --accent-foreground: 0 0% 0%;
+    --accent: var(--theme-dark);
+    --accent-foreground: 255 255 255;
 
-    --ring: 45 98% 54%;
+    --ring: var(--theme-dark);
   }
 
-  /* Manga theme - traditional Japanese crimson red */
+  /* Manga theme - updated to use purple theme colors */
   .manga-theme {
-    --primary: 0 72% 51%;
-    --primary-rgb: 220, 38, 38;
-    --primary-foreground: 0 0% 100%;
+    --primary: var(--theme-dark);
+    --primary-rgb: 124, 58, 237;
+    --primary-foreground: 255 255 255;
 
-    --accent: 0 0% 9%;
-    --accent-foreground: 0 0% 100%;
+    --accent: var(--theme-dark);
+    --accent-foreground: 255 255 255;
 
-    --ring: 0 72% 51%;
+    --ring: var(--theme-dark);
   }
 
   .dark .manga-theme {
-    --primary: 0 72% 51%;
-    --primary-rgb: 220, 38, 38;
-    --primary-foreground: 0 0% 100%;
+    --primary: var(--theme-dark);
+    --primary-rgb: 124, 58, 237;
+    --primary-foreground: 255 255 255;
 
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 100%;
+    --accent: var(--theme-dark);
+    --accent-foreground: 255 255 255;
 
-    --ring: 0 72% 51%;
+    --ring: var(--theme-dark);
   }
 }
 

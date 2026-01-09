@@ -58,6 +58,23 @@ const config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        theme: {
+          lightest: "hsl(var(--theme-lightest))",
+          light: "hsl(var(--theme-light))",
+          medium: "hsl(var(--theme-medium))",
+          dark: "hsl(var(--theme-dark))",
+          darker: "hsl(var(--theme-darker))",
+          darkest: "hsl(var(--theme-darkest))",
+          "extra-dark": "hsl(var(--theme-extra-dark))",
+        },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(var(--success-foreground))",
+        },
+        danger: {
+          DEFAULT: "hsl(var(--danger))",
+          foreground: "hsl(var(--danger-foreground))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

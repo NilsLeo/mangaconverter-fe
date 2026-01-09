@@ -110,8 +110,8 @@ export function ConvertedFiles({ files, onClearAll, onRemoveFile }: ConvertedFil
       <CardHeader className="pb-3">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded-full bg-green-500/10">
-              <Check className="h-4 w-4 text-green-500" />
+            <div className="p-1.5 rounded-full bg-success/10">
+              <Check className="h-4 w-4 text-success" />
             </div>
             <CardTitle>Converted Files</CardTitle>
           </div>

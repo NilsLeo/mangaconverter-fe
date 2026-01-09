@@ -57,7 +57,7 @@ export const metadata: Metadata = {
   authors: [{ name: "Converter Team" }],
   // Keep only non-duplicated icon entries here to avoid duplicate <link> tags
   icons: {
-    other: [{ rel: "mask-icon", url: "/safari-pinned-tab.svg", color: "#8b5cf6" }],
+    other: [{ rel: "mask-icon", url: "/safari-pinned-tab.svg", color: "hsl(var(--theme-medium))" }],
   },
   openGraph: {
     title: "Manga & Comic Converter | Convert Files for E-Readers",
@@ -110,9 +110,9 @@ export default function RootLayout({
           {/* Title for iOS home screen added above; keep other PWA metas */}
           <meta name="format-detection" content="telephone=no" />
           <meta name="mobile-web-app-capable" content="yes" />
-          <meta name="msapplication-TileColor" content="#8b5cf6" />
+          <meta name="msapplication-TileColor" content="hsl(var(--theme-medium))" />
           <meta name="msapplication-tap-highlight" content="no" />
-          <meta name="theme-color" content="#8b5cf6" />
+          <meta name="theme-color" content="hsl(var(--theme-medium))" />
 
           {/* Privacy-friendly analytics by Plausible */}
           <script async src="https://plausible.io/js/pa-7QeSUnhaJo56JwKrcEOR7.js"></script>

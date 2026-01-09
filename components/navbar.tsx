@@ -34,7 +34,7 @@ export function Navbar() {
         {isSignedIn ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full">
+              <Button variant="ghost" size="icon" className="rounded-full hover:text-theme-medium">
                 <User className="h-5 w-5" />
               </Button>
             </DropdownMenuTrigger>
@@ -55,7 +55,7 @@ export function Navbar() {
           </DropdownMenu>
         ) : (
           <SignInButton mode="modal">
-            <Button variant="ghost" size="sm">
+            <Button variant="ghost" size="sm" className="hover:bg-theme-medium/10 hover:text-theme-medium">
               Login
             </Button>
           </SignInButton>
