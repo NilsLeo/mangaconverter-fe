@@ -123,6 +123,8 @@ async function uploadFileViaMultipart(
     effective_bps: effectiveBps,
     per_upload_concurrency: maxConcurrent,
     global_max_concurrency: Number(process.env.NEXT_PUBLIC_GLOBAL_MAX_CONCURRENT_PARTS || "8"),
+    upload_timeout_ms: uploadTimeoutMs,
+    upload_timeout_seconds: Math.round(uploadTimeoutMs / 1000),
   })
 
   // Register for cancellation

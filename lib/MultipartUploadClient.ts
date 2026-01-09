@@ -707,7 +707,8 @@ export class MultipartUploadClient {
 
           // Handle timeout
           xhr.addEventListener("timeout", () => {
-            reject(new Error("Upload timeout after 60s - will retry with fresh connection"))
+            const timeoutSeconds = Math.round(this.config.uploadTimeoutMs / 1000)
+            reject(new Error(`Upload timeout after ${timeoutSeconds}s - will retry with fresh connection`))
           })
 
           // Handle errors
