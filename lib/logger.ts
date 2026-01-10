@@ -156,7 +156,29 @@ class MangaConverterLogger {
   // Console-only logging methods (no backend forwarding)
   // These are simple replacements for console.log with timestamps
 
+  private shouldSuppressConsole(message: string): boolean {
+    // Allow explicit override to keep verbose logs
+    if (process.env.NEXT_PUBLIC_VERBOSE_LOGS === 'true') return false
+
+    // Only suppress in production
+    if (process.env.NODE_ENV !== 'production') return false
+
+    // Noisy prefixes we don't want in production consoles
+    const noisyPrefixes = [
+      '[UI] ETA tick',
+      '[UI] Reading File progress (ticker)',
+      '[UI] Reading File ETA tick',
+      '[UI] Converting progress (ticker)',
+      '[UI] Upload ETA tick',
+      '[UI] Uploading progress:',
+      '[useSession]',
+    ]
+
+    return noisyPrefixes.some((p) => message.startsWith(p))
+  }
+
   log(message: string, ...args: any[]) {
+    if (this.shouldSuppressConsole(message)) return
     const timestamp = new Date().toISOString()
     console.log(`[${timestamp}] ${message}`, ...args)
   }
@@ -172,6 +194,7 @@ class MangaConverterLogger {
   }
 
   logDebug(message: string, ...args: any[]) {
+    if (this.shouldSuppressConsole(message)) return
     const timestamp = new Date().toISOString()
     console.debug(`[${timestamp}] ${message}`, ...args)
   }

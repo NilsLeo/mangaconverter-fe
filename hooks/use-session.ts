@@ -22,6 +22,7 @@ interface UseSessionOptions {
 
 export function useSession(options: UseSessionOptions = {}) {
   const { autoInitialize = false } = options
+  const IS_DEV = process.env.NODE_ENV !== "production"
   const [sessionKey, setSessionKey] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -34,7 +35,7 @@ export function useSession(options: UseSessionOptions = {}) {
   const initializeSession = useCallback(async () => {
     // Don't re-initialize if already done
     if (hasInitialized) {
-      console.log("[useSession] Already initialized, skipping")
+      if (IS_DEV) console.log("[useSession] Already initialized, skipping")
       return sessionKey
     }
 
@@ -47,10 +48,10 @@ export function useSession(options: UseSessionOptions = {}) {
       // Get Clerk token if user is signed in
       if (isSignedIn && getToken) {
         clerkToken = (await getToken()) || undefined
-        console.log("[useSession] Got Clerk token for authenticated user")
+        if (IS_DEV) console.log("[useSession] Got Clerk token for authenticated user")
       }
 
-      console.log("[useSession] Initializing session", {
+      if (IS_DEV) console.log("[useSession] Initializing session", {
         isClerkConfigured,
         isSignedIn,
         hasToken: !!clerkToken,
@@ -63,7 +64,7 @@ export function useSession(options: UseSessionOptions = {}) {
         user?.firstName || undefined,
         user?.lastName || undefined
       )
-      console.log("[useSession] Session initialized successfully", { session })
+      if (IS_DEV) console.log("[useSession] Session initialized successfully", { session })
       setSessionKey(session)
       setHasInitialized(true)
       return session
@@ -74,7 +75,7 @@ export function useSession(options: UseSessionOptions = {}) {
       // Fallback: try to use existing session from localStorage
       const existingSession = getSessionKey()
       if (existingSession) {
-        console.log("[useSession] Using fallback session from localStorage", { existingSession })
+        if (IS_DEV) console.log("[useSession] Using fallback session from localStorage", { existingSession })
         setSessionKey(existingSession)
         setHasInitialized(true)
         return existingSession
@@ -95,10 +96,10 @@ export function useSession(options: UseSessionOptions = {}) {
       // Get Clerk token if user is signed in
       if (isSignedIn && getToken) {
         clerkToken = (await getToken()) || undefined
-        console.log("[useSession] Got Clerk token for authenticated user")
+        if (IS_DEV) console.log("[useSession] Got Clerk token for authenticated user")
       }
 
-      console.log("[useSession] Refreshing session (forced)")
+      if (IS_DEV) console.log("[useSession] Refreshing session (forced)")
 
       // Force a fresh session from the backend
       const session = await ensureSession(
@@ -107,7 +108,7 @@ export function useSession(options: UseSessionOptions = {}) {
         user?.firstName || undefined,
         user?.lastName || undefined
       )
-      console.log("[useSession] Session refreshed successfully", { session })
+      if (IS_DEV) console.log("[useSession] Session refreshed successfully", { session })
       setSessionKey(session)
       return session
     } catch (err) {
@@ -122,7 +123,7 @@ export function useSession(options: UseSessionOptions = {}) {
   // Auto-initialize on mount if enabled
   useEffect(() => {
     if (autoInitialize && !hasInitialized) {
-      console.log("[useSession] Auto-initializing session")
+      if (IS_DEV) console.log("[useSession] Auto-initializing session")
       initializeSession()
     }
   }, [autoInitialize, hasInitialized, initializeSession])
@@ -131,7 +132,7 @@ export function useSession(options: UseSessionOptions = {}) {
   useEffect(() => {
     const existingSession = getSessionKey()
     if (existingSession && !sessionKey) {
-      console.log("[useSession] Found existing session in localStorage", { existingSession })
+      if (IS_DEV) console.log("[useSession] Found existing session in localStorage", { existingSession })
       setSessionKey(existingSession)
       setHasInitialized(true)
     }
@@ -142,7 +143,7 @@ export function useSession(options: UseSessionOptions = {}) {
     const handleStorageChange = () => {
       const newSession = getSessionKey()
       if (newSession && newSession !== sessionKey) {
-        console.log("[useSession] Session changed in localStorage, updating", {
+        if (IS_DEV) console.log("[useSession] Session changed in localStorage, updating", {
           old: sessionKey?.substring(0, 8),
           new: newSession.substring(0, 8),
         })

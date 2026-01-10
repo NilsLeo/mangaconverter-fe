@@ -50,6 +50,7 @@ export function useQueuePolling(
   _interval = 30000, // Unused parameter, kept for backward compatibility
   enabled = true
 ) {
+  const IS_DEV = process.env.NODE_ENV !== 'production'
   const { isLoading: sessionLoading, sessionKey } = useSessionManager()
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [isConnecting, setIsConnecting] = useState(true)
@@ -66,11 +67,11 @@ export function useQueuePolling(
     }
 
     if (!sessionKey) {
-      console.log('[WEBSOCKET] No session key, skipping connection')
+      if (IS_DEV) console.log('[WEBSOCKET] No session key, skipping connection')
       return
     }
 
-    console.log('[WEBSOCKET] Connecting to', API_BASE_URL)
+    if (IS_DEV) console.log('[WEBSOCKET] Connecting to', API_BASE_URL)
     setIsConnecting(true)
 
     // Create Socket.IO connection
@@ -90,18 +91,18 @@ export function useQueuePolling(
 
     // Connection established
     socket.on('connect', () => {
-      console.log('[WEBSOCKET] Connected with socket ID:', socket.id)
+      if (IS_DEV) console.log('[WEBSOCKET] Connected with socket ID:', socket.id)
       setIsConnecting(false)
       setError(null)
 
       // Subscribe to session updates
-      console.log('[WEBSOCKET] Subscribing to session:', sessionKey.substring(0, 8) + '...')
+      if (IS_DEV) console.log('[WEBSOCKET] Subscribing to session:', sessionKey.substring(0, 8) + '...')
       socket.emit('subscribe_session', { session_key: sessionKey })
     })
 
     // Receive session updates
     socket.on('session_update', (data: QueueStatus) => {
-      console.log(`[WEBSOCKET] Received session update: ${data.jobs?.length || 0} jobs`)
+      if (IS_DEV) console.log(`[WEBSOCKET] Received session update: ${data.jobs?.length || 0} jobs`)
       setQueueStatus(data)
     })
 
@@ -114,7 +115,7 @@ export function useQueuePolling(
 
     // Disconnected
     socket.on('disconnect', (reason) => {
-      console.warn('[WEBSOCKET] Disconnected:', reason)
+      if (IS_DEV) console.warn('[WEBSOCKET] Disconnected:', reason)
       setIsConnecting(true)
     })
 
@@ -126,7 +127,7 @@ export function useQueuePolling(
 
     // Cleanup
     return () => {
-      console.log('[WEBSOCKET] Disconnecting')
+      if (IS_DEV) console.log('[WEBSOCKET] Disconnecting')
       socket.disconnect()
       socketRef.current = null
     }
@@ -137,7 +138,7 @@ export function useQueuePolling(
     if (socketRef.current?.connected) {
       const sessionKey = getSessionKey()
       if (sessionKey) {
-        console.log('[WEBSOCKET] Requesting manual refresh')
+        if (IS_DEV) console.log('[WEBSOCKET] Requesting manual refresh')
         socketRef.current.emit('request_session_status', { session_key: sessionKey })
       }
     }

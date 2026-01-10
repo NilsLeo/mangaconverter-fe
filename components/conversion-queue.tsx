@@ -13,7 +13,6 @@ import {
   XCircle,
   Settings,
   Upload,
-  BookOpen,
   Cog,
   CheckCircle2,
   AlertCircle,
@@ -729,7 +728,16 @@ export function ConversionQueue({
 
   // Timeline stage calculation
   const getTimelineStage = (file: PendingUpload, index: number) => {
-    const status = file.status || (isConverting && index === 0 ? currentStatus : null)
+    const status = file.status
+    // Use file-specific state if available, otherwise fallback to global state
+    const clientProcessingProgress =
+      file.clientProcessingProgress ?? pendingUploads.find((f) => f.jobId === file.jobId)?.clientProcessingProgress ?? 0
+    const displayedRemainingSec =
+      file.displayedRemainingSec ?? pendingUploads.find((f) => f.jobId === file.jobId)?.displayedRemainingSec ?? null
+    const processingEtaSec =
+      file.processingEtaSec ?? pendingUploads.find((f) => f.jobId === file.jobId)?.processingEtaSec ?? null
+    const processingStartTime =
+      file.processingStartTime ?? pendingUploads.find((f) => f.jobId === file.jobId)?.processingStartTime ?? null
 
     // Handle error state - show as stage 3 but mark as errored
     if (file.error) {
@@ -738,6 +746,31 @@ export function ConversionQueue({
 
     // Before conversion starts - stage -1 means no active stage yet
     if (!status) return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
+
+    if (status === "QUEUED") {
+      // Check if upload has been completed (confirmed_percentage is 100)
+      const uploadConfirmed = (file.upload_progress as any)?.confirmed_percentage ?? 0
+
+      if (uploadConfirmed >= 100) {
+        // Upload is complete, show queued at converting stage
+        return {
+          stage: 0.5, // Special stage to indicate queued at converting position
+          progress: 100, // Upload bar should be full
+          label: "Queued",
+          eta: null,
+          isError: false,
+        }
+      } else {
+        // Upload not started or not complete yet, show queued at upload position
+        return {
+          stage: -0.5, // Special stage to indicate queued at upload position
+          progress: 0,
+          label: "Queued",
+          eta: null,
+          isError: false,
+        }
+      }
+    }
 
     // Stage 0: Uploading (0-100% of upload)
     if (status === "UPLOADING") {
@@ -760,23 +793,12 @@ export function ConversionQueue({
       }
     }
 
-    // Stage 1: Reading File (downloading from S3 to worker)
-    if (status === "QUEUED") {
-      return {
-        stage: 1,
-        progress: Math.max(0, Math.min(99, clientQueuedProgress)),
-        label: "Reading File",
-        eta: displayedQueuedRemainingSec ?? null,
-        isError: false,
-      }
-    }
-
-    // Stage 2: Converting
+    // Stage 1: Converting
     if (status === "PROCESSING") {
       // Prefer client-side ticker based on backend ETA
       if (processingStartTime && processingEtaSec) {
         return {
-          stage: 2,
+          stage: 1,
           progress: Math.max(0, Math.min(99, clientProcessingProgress)),
           label: "Converting",
           eta: displayedRemainingSec ?? null,
@@ -788,19 +810,18 @@ export function ConversionQueue({
         const { progress_percent, remaining_seconds } = file.processing_progress
         const safeProgress = Math.max(0, Math.min(99, progress_percent || 0))
         return {
-          stage: 2,
+          stage: 1,
           progress: safeProgress,
           label: "Converting",
           eta: remaining_seconds ?? null,
           isError: false,
         }
       }
-      return { stage: 2, progress: 0, label: "Converting", eta: null, isError: false }
+      return { stage: 1, progress: 0, label: "Converting", eta: null, isError: false }
     }
 
-    // Stage 3: Ready for Download
     if (status === "COMPLETE") {
-      return { stage: 3, progress: 100, label: "Ready for Download", eta: null, isError: false }
+      return { stage: 2, progress: 100, label: "Ready for Download", eta: null, isError: false }
     }
 
     return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
@@ -816,7 +837,7 @@ export function ConversionQueue({
           border: "border-theme-lightest",
           bg: "bg-theme-lightest",
         }
-      case 1: // Reading - light
+      case 1: // Converting - light (was medium, now light since we removed Reading stage)
         return {
           light: "bg-theme-light/40",
           dark: "bg-theme-light",
@@ -824,21 +845,13 @@ export function ConversionQueue({
           border: "border-theme-light",
           bg: "bg-theme-light",
         }
-      case 2: // Converting - medium
+      case 2: // Complete - medium (was dark, now medium since we removed Reading stage)
         return {
           light: "bg-theme-medium/40",
           dark: "bg-theme-medium",
           icon: "text-theme-dark",
           border: "border-theme-medium",
           bg: "bg-theme-medium",
-        }
-      case 3: // Complete - dark
-        return {
-          light: "bg-theme-dark/40",
-          dark: "bg-theme-dark",
-          icon: "text-theme-darker",
-          border: "border-theme-dark",
-          bg: "bg-theme-dark",
         }
       default:
         return {
@@ -856,20 +869,26 @@ export function ConversionQueue({
 
     const stages = [
       { icon: Upload, label: "Upload", shortLabel: "Upload", active: stage >= 0 },
-      { icon: BookOpen, label: "Reading", shortLabel: "Read", active: stage >= 1 },
-      { icon: Cog, label: "Converting", shortLabel: "Convert", active: stage >= 2 },
+      { icon: Cog, label: "Converting", shortLabel: "Convert", active: stage >= 1 },
       {
         icon: isError ? AlertCircle : CheckCircle2,
         label: isError ? "Error" : "Complete",
         shortLabel: isError ? "Error" : "Done",
-        active: stage >= 3,
+        active: stage >= 2,
       },
     ]
 
+    const isQueuedAtUpload = stage === -0.5
+    const isQueuedAtConverting = stage === 0.5
+    const isQueued = isQueuedAtUpload || isQueuedAtConverting
+
+    const displayStage = isQueuedAtUpload ? 0 : isQueuedAtConverting ? 1 : stage
+    const showProgressBar = !isQueued && displayStage >= 0 && displayStage < stages.length
+
     // Each stage shows its own 100% progress bar when active
-    const currentStageProgress = stage >= 0 && stage < stages.length ? progress : 0
-    const isCompleted = stage >= 3 && !isError
-    const isErrored = stage >= 3 && isError
+    const currentStageProgress = displayStage >= 0 && displayStage < stages.length ? progress : 0
+    const isCompleted = displayStage >= stages.length - 1 && !isError
+    const isErrored = displayStage >= stages.length - 1 && isError
 
     return (
       <div className="w-full">
@@ -890,10 +909,13 @@ export function ConversionQueue({
                 {/* Stage nodes */}
                 {stages.map((s, i) => {
                   const Icon = s.icon
-                  const isCurrentStage = i === stage && stage < 3
-                  const isPastStage = stage >= 3 ? true : i < stage
-                  const isFutureStage = i > stage && stage < 3
+                  const isCurrentStage = i === displayStage && displayStage < stages.length - 1
+                  const isPastStage =
+                    isQueuedAtConverting && i === 0 ? true : displayStage >= stages.length - 1 ? true : i < displayStage
+                  const isFutureStage = i > displayStage && displayStage < stages.length - 1
                   const colors = getStageColors(i)
+
+                  const iconClass = `h-4 w-4 ${isCurrentStage && !isQueued ? "animate-pulse" : ""} ${isQueued && i === displayStage ? "animate-spin" : ""}`
 
                   return (
                     <div key={i} className="flex flex-col items-center">
@@ -903,9 +925,9 @@ export function ConversionQueue({
                           relative z-10 flex items-center justify-center
                           w-8 h-8 rounded-full border-2 transition-all duration-300
                           ${
-                            isCurrentStage
+                            isCurrentStage || (isQueued && i === displayStage)
                               ? `${colors.border} ${colors.bg} text-white shadow-md`
-                              : isPastStage && isError && i === 3
+                              : isPastStage && isError && i === stages.length - 1
                                 ? "border-destructive bg-destructive text-destructive-foreground"
                                 : isPastStage
                                   ? `${colors.border} ${colors.bg}/10 ${colors.icon}`
@@ -913,10 +935,10 @@ export function ConversionQueue({
                           }
                         `}
                       >
-                        {isPastStage && i < 3 ? (
+                        {isPastStage && i < stages.length - 1 ? (
                           <CheckCircle2 className="h-4 w-4" />
                         ) : (
-                          <Icon className={`h-4 w-4 ${isCurrentStage ? "animate-pulse" : ""}`} />
+                          <Icon className={iconClass} />
                         )}
                       </div>
 
@@ -925,11 +947,11 @@ export function ConversionQueue({
                         <span
                           className={`
                             text-[10px] font-medium transition-colors block
-                            ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
-                            ${stage >= 3 ? "line-through opacity-60" : isPastStage && i < stage ? "line-through opacity-60" : ""}
+                            ${isCurrentStage || (isQueued && i === displayStage) ? "text-foreground" : "text-muted-foreground"}
+                            ${displayStage >= stages.length - 1 ? "line-through opacity-60" : isPastStage && i < displayStage ? "line-through opacity-60" : ""}
                           `}
                         >
-                          {s.shortLabel}
+                          {isQueued && i === displayStage ? "Queued" : s.shortLabel}
                         </span>
                       </div>
                     </div>
@@ -942,12 +964,10 @@ export function ConversionQueue({
             {actionButtons && <div className="flex-shrink-0 ml-2">{actionButtons}</div>}
           </div>
 
-          {/* Progress bar for active stages */}
-          {stage >= 0 && stage < 3 && (
+          {showProgressBar && (
             <div className="space-y-2">
               <div className="relative h-2 bg-muted rounded-full overflow-hidden">
-                {/* Render all completed previous stages at 100% with reduced opacity */}
-                {Array.from({ length: stage }).map((_, i) => (
+                {Array.from({ length: displayStage }).map((_, i) => (
                   <div
                     key={`completed-stage-${i}`}
                     className={`absolute inset-y-0 left-0 ${getStageColors(i).dark} opacity-60 rounded-full`}
@@ -956,7 +976,7 @@ export function ConversionQueue({
                 ))}
 
                 {/* Current stage progress bar */}
-                {stage === 0 && file.status === "UPLOADING" ? (
+                {displayStage === 0 && file.status === "UPLOADING" ? (
                   <>
                     {/* Light layer: total sent */}
                     <div
@@ -977,7 +997,7 @@ export function ConversionQueue({
                   </>
                 ) : (
                   <div
-                    className={`absolute inset-y-0 left-0 ${getStageColors(stage).dark} rounded-full transition-all duration-500 ease-out`}
+                    className={`absolute inset-y-0 left-0 ${getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
                     style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                   />
                 )}
@@ -985,7 +1005,7 @@ export function ConversionQueue({
 
               {/* Progress text */}
               <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
-                {stage === 0 && file.status === "UPLOADING" ? (
+                {displayStage === 0 && file.status === "UPLOADING" ? (
                   <>
                     <span>
                       Sent: {Math.round(currentStageProgress)}%{(() => {
@@ -1006,7 +1026,7 @@ export function ConversionQueue({
                 ) : (
                   <>
                     <span>
-                      {Math.round(currentStageProgress)}% {stages[stage]?.label || ""}
+                      {Math.round(currentStageProgress)}% {stages[displayStage]?.label || ""}
                     </span>
                     {eta != null && eta > 0 && <span>{formatTime(eta)}</span>}
                   </>
@@ -1035,10 +1055,13 @@ export function ConversionQueue({
                 {/* Stage nodes */}
                 {stages.map((s, i) => {
                   const Icon = s.icon
-                  const isCurrentStage = i === stage && stage < 3
-                  const isPastStage = stage >= 3 ? true : i < stage
-                  const isFutureStage = i > stage && stage < 3
+                  const isCurrentStage = i === displayStage && displayStage < stages.length - 1
+                  const isPastStage =
+                    isQueuedAtConverting && i === 0 ? true : displayStage >= stages.length - 1 ? true : i < displayStage
+                  const isFutureStage = i > displayStage && displayStage < stages.length - 1
                   const colors = getStageColors(i)
+
+                  const iconClass = `h-5 w-5 ${isCurrentStage && !isQueued ? "animate-pulse" : ""} ${isQueued && i === displayStage ? "animate-spin" : ""}`
 
                   return (
                     <div key={i} className="flex flex-col items-center">
@@ -1048,9 +1071,9 @@ export function ConversionQueue({
                           relative z-10 flex items-center justify-center
                           w-10 h-10 rounded-full border-2 transition-all duration-300
                           ${
-                            isCurrentStage
+                            isCurrentStage || (isQueued && i === displayStage)
                               ? `${colors.border} ${colors.bg} text-white shadow-md`
-                              : isPastStage && isError && i === 3
+                              : isPastStage && isError && i === stages.length - 1
                                 ? "border-destructive bg-destructive text-destructive-foreground"
                                 : isPastStage
                                   ? `${colors.border} ${colors.bg}/10 ${colors.icon}`
@@ -1058,10 +1081,10 @@ export function ConversionQueue({
                           }
                         `}
                       >
-                        {isPastStage && i < 3 ? (
+                        {isPastStage && i < stages.length - 1 ? (
                           <CheckCircle2 className="h-5 w-5" />
                         ) : (
-                          <Icon className={`h-5 w-5 ${isCurrentStage ? "animate-pulse" : ""}`} />
+                          <Icon className={iconClass} />
                         )}
                       </div>
 
@@ -1070,16 +1093,14 @@ export function ConversionQueue({
                         <span
                           className={`
                             text-xs font-medium transition-colors block
-                            ${isCurrentStage ? "text-foreground" : "text-muted-foreground"}
-                            ${stage >= 3 ? "line-through opacity-60" : isPastStage && i < stage ? "line-through opacity-60" : ""}
+                            ${isCurrentStage || (isQueued && i === displayStage) ? "text-foreground" : "text-muted-foreground"}
+                            ${displayStage >= stages.length - 1 ? "line-through opacity-60" : isPastStage && i < displayStage ? "line-through opacity-60" : ""}
                           `}
                         >
-                          <span className="hidden lg:inline">{s.label}</span>
-                          <span className="lg:hidden">{s.shortLabel}</span>
+                          {isQueued && i === displayStage ? "Queued" : s.label}
                         </span>
 
-                        {/* Progress info for current stage */}
-                        {isCurrentStage && (
+                        {isCurrentStage && !isQueued && (
                           <div className="text-[10px] text-muted-foreground mt-0.5">
                             {Math.round(currentStageProgress)}%
                             {eta != null && eta > 0 && <span className="hidden md:inline"> · {formatTime(eta)}</span>}
@@ -1091,22 +1112,21 @@ export function ConversionQueue({
                 })}
               </div>
 
-              {stage >= 0 && stage < 3 && (
-                <div className="mt-4 mx-5">
-                  <div className="relative h-2 md:h-1.5 bg-muted rounded-full overflow-hidden">
-                    {/* Render all completed previous stages at 100% with reduced opacity */}
-                    {Array.from({ length: stage }).map((_, i) => (
+              {showProgressBar && (
+                <div className="mt-4 space-y-2">
+                  <div className="relative h-2 bg-muted rounded-full overflow-hidden">
+                    {Array.from({ length: displayStage }).map((_, i) => (
                       <div
-                        key={`completed-stage-desktop-${i}`}
+                        key={`completed-stage-${i}`}
                         className={`absolute inset-y-0 left-0 ${getStageColors(i).dark} opacity-60 rounded-full`}
                         style={{ width: "100%" }}
                       />
                     ))}
 
-                    {/* Current stage progress */}
-                    {stage === 0 && file.status === "UPLOADING" ? (
+                    {/* Current stage progress bar */}
+                    {displayStage === 0 && file.status === "UPLOADING" ? (
                       <>
-                        {/* Light layer: sent bytes */}
+                        {/* Light layer: total sent */}
                         <div
                           className={`absolute inset-y-0 left-0 ${getStageColors(0).light} rounded-full transition-all duration-300`}
                           style={{ width: `${Math.min(100, currentStageProgress)}%` }}
@@ -1125,34 +1145,38 @@ export function ConversionQueue({
                       </>
                     ) : (
                       <div
-                        className={`absolute inset-y-0 left-0 ${getStageColors(stage).dark} rounded-full transition-all duration-300`}
+                        className={`absolute inset-y-0 left-0 ${getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
                         style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                       />
                     )}
                   </div>
-                  <div className="flex items-center justify-between mt-1.5 text-[11px] md:text-[10px] text-muted-foreground">
-                    {stage === 0 && file.status === "UPLOADING" ? (
+
+                  {/* Progress text */}
+                  <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+                    {displayStage === 0 && file.status === "UPLOADING" ? (
                       <>
                         <span>
                           Sent: {Math.round(currentStageProgress)}%{(() => {
                             const confirmed =
                               (file.upload_progress as any)?.confirmed_percentage ?? file.upload_progress?.percentage
                             return confirmed !== undefined && confirmed > 0 ? (
-                              <span className="ml-2 text-primary">· Confirmed: {Math.round(confirmed)}%</span>
+                              <span className="ml-1.5 text-primary hidden xs:inline">
+                                · Confirmed: {Math.round(confirmed)}%
+                              </span>
                             ) : null
                           })()}
                         </span>
                         {(() => {
                           const speed = jobUploadSpeeds.get(file.jobId || file.job_id || "") ?? 0
-                          return speed > 0 ? <span className="hidden sm:inline">{formatUploadSpeed(speed)}</span> : null
+                          return speed > 0 ? <span className="hidden xs:inline">{formatUploadSpeed(speed)}</span> : null
                         })()}
                       </>
                     ) : (
                       <>
                         <span>
-                          {stages[stage]?.label}: {Math.round(currentStageProgress)}%
+                          {Math.round(currentStageProgress)}% {stages[displayStage]?.label || ""}
                         </span>
-                        {eta != null && eta > 0 && <span>{formatTime(eta)} remaining</span>}
+                        {eta != null && eta > 0 && <span>{formatTime(eta)}</span>}
                       </>
                     )}
                   </div>
@@ -1160,8 +1184,8 @@ export function ConversionQueue({
               )}
             </div>
 
-            {/* Action buttons on desktop - better aligned */}
-            {actionButtons && <div className="flex items-center flex-shrink-0 pt-0.5">{actionButtons}</div>}
+            {/* Action button on right */}
+            {actionButtons && <div className="flex-shrink-0">{actionButtons}</div>}
           </div>
         </div>
       </div>
@@ -1299,6 +1323,69 @@ export function ConversionQueue({
 
   return (
     <div className="space-y-3">
+      {onAddMoreFiles && onOpenSidebar && onStartConversion && (
+        <div className="flex flex-col sm:flex-row gap-3 w-full">
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (hasActiveJobs()) {
+                toast.info("Please wait", {
+                  description: "Wait for current files to finish converting before adding more files.",
+                })
+                return
+              }
+              onAddMoreFiles()
+            }}
+            disabled={isConverting || hasActiveJobs()}
+            className="w-full sm:w-auto sm:flex-1 border-dashed border-2 hover:border-primary hover:bg-primary/5"
+          >
+            <FileText className="mr-2 h-4 w-4" />
+            Add more files
+          </Button>
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={() => {
+              if (hasActiveJobs()) {
+                toast.info("Please wait", {
+                  description: "Wait for current files to finish converting before changing settings.",
+                })
+                return
+              }
+              onOpenSidebar()
+            }}
+            disabled={hasActiveJobs()}
+            className="w-full sm:w-auto sm:flex-1"
+          >
+            <Settings className="h-5 w-5 mr-2" />
+            Configure Options
+          </Button>
+          <Button
+            size="lg"
+            onClick={() => {
+              if (hasActiveJobs()) {
+                toast.info("Please wait", {
+                  description: "Wait for current files to finish converting before starting a new batch.",
+                })
+                return
+              }
+              onStartConversion()
+            }}
+            disabled={isConverting || hasActiveJobs() || (isReadyToConvert && !isReadyToConvert())}
+            className="w-full sm:w-auto sm:flex-1"
+          >
+            {isConverting ? (
+              <>
+                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                Converting...
+              </>
+            ) : (
+              "Start Conversion"
+            )}
+          </Button>
+        </div>
+      )}
+
       {items.map((file, index) => {
         const progressInfo = getProgressInfo(file, index)
         const isActive = isConverting && index === 0
@@ -1407,59 +1494,42 @@ export function ConversionQueue({
                     index,
                     <>
                       {(() => {
-                        const isCancelling = file.jobId ? cancellingJobs.has(file.jobId) : false
-                        const isDismissing = file.jobId ? dismissingJobs.has(file.jobId) : false
-                        const isLoading = isCancelling || isDismissing
+                        const isDismissing = file.jobId
+                          ? dismissingJobs.has(file.jobId) || cancellingJobs.has(file.jobId)
+                          : false
 
-                        if (file.error) {
-                          return (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => onDismissJob?.(file)}
-                              disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
-                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                              aria-label="Dismiss from list"
-                              title="Dismiss from list"
-                            >
-                              {file.jobId && dismissingJobs.has(file.jobId) ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <X className="h-4 w-4" />
-                              )}
-                              <span className="sr-only">Dismiss</span>
-                            </Button>
-                          )
-                        }
-
-                        if (jobRunning && onCancelJob) {
+                        if (file.error || jobRunning) {
                           return (
                             <Button
                               variant="ghost"
                               size="sm"
                               onClick={() => {
-                                log("[v0] Cancel button clicked for job:", file.jobId)
-                                onCancelJob(file)
+                                if (jobRunning && onCancelJob) {
+                                  log("[v0] Dismiss button clicked (cancelling job):", file.jobId)
+                                  onCancelJob(file)
+                                } else {
+                                  onDismissJob?.(file)
+                                }
                               }}
-                              disabled={isLoading}
+                              disabled={isDismissing}
                               className={`
                                 h-9 px-3
                                 text-muted-foreground
                                 hover:text-destructive hover:bg-destructive/10
                                 active:bg-destructive/20
                                 transition-colors duration-150
-                                ${isLoading ? "opacity-60 pointer-events-none" : ""}
+                                ${isDismissing ? "opacity-60 pointer-events-none" : ""}
                               `}
-                              aria-label={isLoading ? "Cancelling..." : "Cancel conversion"}
-                              title={isLoading ? "Cancelling..." : "Cancel conversion"}
+                              aria-label={isDismissing ? "Dismissing..." : "Dismiss"}
+                              title={isDismissing ? "Dismissing..." : "Dismiss"}
                             >
-                              {isLoading ? (
+                              {isDismissing ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <XCircle className="h-4 w-4" />
                               )}
                               <span className="hidden sm:inline ml-1.5 text-sm font-medium">
-                                {isLoading ? "Cancelling" : "Cancel"}
+                                {isDismissing ? "Dismissing" : "Dismiss"}
                               </span>
                             </Button>
                           )
@@ -1509,19 +1579,28 @@ export function ConversionQueue({
                       </Button>
                       <Button
                         variant="ghost"
-                        size="icon"
+                        size="sm"
                         onClick={() => onDismissJob?.(file)}
                         disabled={file.jobId ? dismissingJobs.has(file.jobId) : false}
-                        className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                        aria-label="Dismiss from list"
-                        title="Dismiss from list"
+                        className={`
+                          h-9 px-3
+                          text-muted-foreground
+                          hover:text-destructive hover:bg-destructive/10
+                          active:bg-destructive/20
+                          transition-colors duration-150
+                          ${file.jobId && dismissingJobs.has(file.jobId) ? "opacity-60 pointer-events-none" : ""}
+                        `}
+                        aria-label={file.jobId && dismissingJobs.has(file.jobId) ? "Dismissing..." : "Dismiss"}
+                        title={file.jobId && dismissingJobs.has(file.jobId) ? "Dismissing..." : "Dismiss"}
                       >
                         {file.jobId && dismissingJobs.has(file.jobId) ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
-                          <X className="h-4 w-4" />
+                          <XCircle className="h-4 w-4" />
                         )}
-                        <span className="sr-only">Dismiss</span>
+                        <span className="hidden sm:inline ml-1.5 text-sm font-medium">
+                          {file.jobId && dismissingJobs.has(file.jobId) ? "Dismissing" : "Dismiss"}
+                        </span>
                       </Button>
                     </div>,
                   )}
@@ -1530,72 +1609,6 @@ export function ConversionQueue({
           </motion.div>
         )
       })}
-
-      {onAddMoreFiles && (
-        <Button
-          variant="outline"
-          onClick={() => {
-            if (hasActiveJobs()) {
-              toast.info("Please wait", {
-                description: "Wait for current files to finish converting before adding more files.",
-              })
-              return
-            }
-            onAddMoreFiles()
-          }}
-          disabled={isConverting || hasActiveJobs()}
-          className="w-full h-12 border-dashed border-2 hover:border-primary hover:bg-primary/5 bg-transparent transition-colors"
-        >
-          <FileText className="mr-2 h-4 w-4" />
-          Add more files
-        </Button>
-      )}
-
-      {onOpenSidebar && onStartConversion && (
-        <div className="flex flex-col sm:flex-row gap-3 mt-4 w-full">
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={() => {
-              if (hasActiveJobs()) {
-                toast.info("Please wait", {
-                  description: "Wait for current files to finish converting before changing settings.",
-                })
-                return
-              }
-              onOpenSidebar()
-            }}
-            disabled={hasActiveJobs()}
-            className="w-full sm:w-auto sm:flex-1"
-          >
-            <Settings className="h-5 w-5 mr-2" />
-            Configure Options
-          </Button>
-          <Button
-            size="lg"
-            onClick={() => {
-              if (hasActiveJobs()) {
-                toast.info("Please wait", {
-                  description: "Wait for current files to finish converting before starting a new batch.",
-                })
-                return
-              }
-              onStartConversion()
-            }}
-            disabled={isConverting || hasActiveJobs() || (isReadyToConvert && !isReadyToConvert())}
-            className="w-full sm:w-auto sm:flex-1"
-          >
-            {isConverting ? (
-              <>
-                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                Converting...
-              </>
-            ) : (
-              "Start Conversion"
-            )}
-          </Button>
-        </div>
-      )}
     </div>
   )
 }
