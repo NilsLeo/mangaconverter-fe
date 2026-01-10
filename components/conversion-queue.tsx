@@ -26,8 +26,6 @@ import { log, logError } from "@/lib/logger"
 import { toast } from "sonner"
 // Removed Tooltip usage on queue action buttons to avoid ref update loop
 
-const QUEUED_SECONDS = Number.parseInt(process.env.NEXT_PUBLIC_QUEUED_SECONDS || "5", 10)
-
 interface ConversionQueueProps {
   pendingUploads: PendingUpload[]
   isConverting: boolean
@@ -120,14 +118,6 @@ export function ConversionQueue({
   const lastLoggedProcessingTenthRef = useRef<number | null>(null)
   const lastLoggedRemainingSecRef = useRef<number | null>(null)
   const processingJobIdRef = useRef<string>("unknown")
-  // QUEUED progressive ticker state
-  const [queuedStartTime, setQueuedStartTime] = useState<number | null>(null)
-  const [queuedDurationSec, setQueuedDurationSec] = useState<number>(QUEUED_SECONDS)
-  const [clientQueuedProgress, setClientQueuedProgress] = useState<number>(0)
-  const [displayedQueuedRemainingSec, setDisplayedQueuedRemainingSec] = useState<number | null>(null)
-  const queuedJobIdRef = useRef<string>("unknown")
-  const lastLoggedQueuedTenthRef = useRef<number | null>(null)
-  const lastLoggedQueuedRemainingRef = useRef<number | null>(null)
 
   // Refs to track last logged progress percentage for each job stage (to log only at 10% intervals)
   // No queued/progress logs: handled by backend
@@ -185,94 +175,12 @@ export function ConversionQueue({
     }
   }, [pendingUploads, processingStartTime])
 
-  // Initialize QUEUED ticker with static duration from env
-  useEffect(() => {
-    const queuedFile = pendingUploads.find((f) => f.status === "QUEUED")
-    if (queuedFile) {
-      if (queuedStartTime == null) {
-        const start = queuedFile.queuedAt || Date.now()
-        setQueuedStartTime(start)
-        setQueuedDurationSec(QUEUED_SECONDS)
-        const elapsed = Math.max(0, (Date.now() - start) / 1000)
-        const initialProgress = Math.floor(Math.max(0, Math.min(99, (elapsed / QUEUED_SECONDS) * 100)))
-        setClientQueuedProgress(initialProgress)
-        const initialRemaining = Math.max(0, Math.ceil(QUEUED_SECONDS - elapsed))
-        setDisplayedQueuedRemainingSec(initialRemaining)
-        const jId = (queuedFile as any)?.jobId || (queuedFile as any)?.job_id
-        queuedJobIdRef.current = jId || "unknown"
-        lastLoggedQueuedTenthRef.current = null
-        lastLoggedQueuedRemainingRef.current = null
-      }
-    } else {
-      setQueuedStartTime(null)
-      setClientQueuedProgress(0)
-      setDisplayedQueuedRemainingSec(null)
-      queuedJobIdRef.current = "unknown"
-      lastLoggedQueuedTenthRef.current = null
-      lastLoggedQueuedRemainingRef.current = null
-    }
-  }, [pendingUploads, queuedStartTime])
-
-  // QUEUED progress ticker: 1% every (duration/100) seconds
-  useEffect(() => {
-    if (queuedStartTime && queuedDurationSec > 0) {
-      const tickMs = (queuedDurationSec / 100) * 1000
-      const interval = setInterval(() => {
-        const elapsed = (Date.now() - queuedStartTime) / 1000
-        const progress = Math.floor((elapsed / queuedDurationSec) * 100)
-        setClientQueuedProgress((prev) => {
-          const value = Math.max(prev, Math.min(99, progress))
-          const currentTenth = Math.floor(value / 10) * 10
-          const lastTenth = lastLoggedQueuedTenthRef.current ?? -1
-          if (value > 0 && currentTenth !== lastTenth && currentTenth >= 10 && currentTenth <= 90) {
-            lastLoggedQueuedTenthRef.current = currentTenth
-            const jobId = queuedJobIdRef.current
-            const remaining = displayedQueuedRemainingSec ?? Math.max(0, Math.ceil(queuedDurationSec - elapsed))
-            log(`[UI] Reading File progress (ticker): ${currentTenth}%`, {
-              progress_percent: currentTenth,
-              elapsed_seconds: Math.floor(elapsed),
-              remaining_seconds: Math.floor(remaining),
-              total_seconds: queuedDurationSec,
-              job_id: jobId,
-            })
-          }
-          return value
-        })
-      }, tickMs)
-      return () => clearInterval(interval)
-    }
-  }, [queuedStartTime, queuedDurationSec, displayedQueuedRemainingSec])
-
-  // QUEUED ETA ticker: decrement 1s every second
-  useEffect(() => {
-    if (queuedStartTime) {
-      const interval = setInterval(() => {
-        setDisplayedQueuedRemainingSec((prev) => {
-          if (prev == null) return prev
-          const next = Math.max(0, prev - 1)
-          if (lastLoggedQueuedRemainingRef.current == null || next !== lastLoggedQueuedRemainingRef.current) {
-            lastLoggedQueuedRemainingRef.current = next
-            const jobId = queuedJobIdRef.current
-            log(`[UI] Reading File ETA tick: ${next}s remaining`, {
-              remaining_seconds: next,
-              total_seconds: queuedDurationSec,
-              job_id: jobId,
-            })
-          }
-          return next
-        })
-      }, 1000)
-      return () => clearInterval(interval)
-    }
-  }, [queuedStartTime, queuedDurationSec])
-
-  // Progress ticker: increment 1% every (ETA/100) seconds
+  // Progress ticker: update smoothly every 100ms for smooth animation
   useEffect(() => {
     if (processingStartTime && processingEtaSec && processingEtaSec > 0) {
-      const tickIntervalMs = (processingEtaSec / 100) * 1000
       const interval = setInterval(() => {
         const elapsed = (Date.now() - processingStartTime) / 1000
-        const progress = Math.floor((elapsed / processingEtaSec) * 100)
+        const progress = (elapsed / processingEtaSec) * 100 // Keep fractional for smooth rendering
         const next = Math.max(0, Math.min(99, progress))
         setClientProcessingProgress((prev) => {
           const value = Math.max(prev, next)
@@ -293,7 +201,7 @@ export function ConversionQueue({
           }
           return value
         })
-      }, tickIntervalMs)
+      }, 100) // Update every 100ms for smooth animation
       return () => clearInterval(interval)
     }
   }, [processingStartTime, processingEtaSec])
@@ -729,15 +637,6 @@ export function ConversionQueue({
   // Timeline stage calculation
   const getTimelineStage = (file: PendingUpload, index: number) => {
     const status = file.status
-    // Use file-specific state if available, otherwise fallback to global state
-    const clientProcessingProgress =
-      file.clientProcessingProgress ?? pendingUploads.find((f) => f.jobId === file.jobId)?.clientProcessingProgress ?? 0
-    const displayedRemainingSec =
-      file.displayedRemainingSec ?? pendingUploads.find((f) => f.jobId === file.jobId)?.displayedRemainingSec ?? null
-    const processingEtaSec =
-      file.processingEtaSec ?? pendingUploads.find((f) => f.jobId === file.jobId)?.processingEtaSec ?? null
-    const processingStartTime =
-      file.processingStartTime ?? pendingUploads.find((f) => f.jobId === file.jobId)?.processingStartTime ?? null
 
     // Handle error state - show as stage 3 but mark as errored
     if (file.error) {
@@ -749,10 +648,10 @@ export function ConversionQueue({
 
     if (status === "QUEUED") {
       // WebSocket emits QUEUED after upload completes and before processing
-      // Always show queued at the converting stage, replacing its icon with a spinner
+      // Show as queued without progress - worker will pick it up when ready
       return {
         stage: 0.5, // queued at converting position
-        progress: 100, // upload visually considered complete
+        progress: 0, // No progress shown during queue wait
         label: "Queued",
         eta: null,
         isError: false,
@@ -782,8 +681,11 @@ export function ConversionQueue({
 
     // Stage 1: Converting
     if (status === "PROCESSING") {
-      // Prefer client-side ticker based on backend ETA
-      if (processingStartTime && processingEtaSec) {
+      // Check if this file is the one currently being processed with active ticker
+      const isActiveProcessingFile = file.processing_progress && processingStartTime && processingEtaSec
+
+      // Use client-side ticker if available (continuous updates)
+      if (isActiveProcessingFile) {
         return {
           stage: 1,
           progress: Math.max(0, Math.min(99, clientProcessingProgress)),
@@ -1222,11 +1124,11 @@ export function ConversionQueue({
     }
 
     if (file.status === "QUEUED") {
+      // No progress shown - just waiting for worker to pick up the job
       return {
-        progress: Math.max(0, Math.min(100, clientQueuedProgress)),
-        label:
-          displayedQueuedRemainingSec != null ? `${formatTime(displayedQueuedRemainingSec)} remaining` : "Reading File",
-        showProgress: true,
+        progress: 0,
+        label: "Queued",
+        showProgress: false,
       }
     }
 
@@ -1259,8 +1161,8 @@ export function ConversionQueue({
       case "QUEUED":
         return {
           progress: 0,
-          label: "Converting - 0%",
-          showProgress: true,
+          label: "Queued",
+          showProgress: false,
         }
 
       case "PROCESSING":
