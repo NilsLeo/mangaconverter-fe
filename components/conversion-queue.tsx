@@ -1387,6 +1387,10 @@ export function ConversionQueue({
                           ? dismissingJobs.has(file.jobId) || cancellingJobs.has(file.jobId)
                           : false
 
+                        // Disable ALL cancel buttons when ANY cancellation is in progress
+                        const isAnyCancellationInProgress = cancellingJobs.size > 0
+                        const isButtonDisabled = isDismissing || isAnyCancellationInProgress
+
                         if (file.error || jobRunning) {
                           return (
                             <Button
@@ -1400,17 +1404,17 @@ export function ConversionQueue({
                                   onDismissJob?.(file)
                                 }
                               }}
-                              disabled={isDismissing}
+                              disabled={isButtonDisabled}
                               className={`
                                 h-9 px-3
                                 text-muted-foreground
                                 hover:text-destructive hover:bg-destructive/10
                                 active:bg-destructive/20
                                 transition-colors duration-150
-                                ${isDismissing ? "opacity-60 pointer-events-none" : ""}
+                                ${isButtonDisabled ? "opacity-60 pointer-events-none" : ""}
                               `}
-                              aria-label={isDismissing ? "Dismissing..." : "Dismiss"}
-                              title={isDismissing ? "Dismissing..." : "Dismiss"}
+                              aria-label={isDismissing ? "Dismissing..." : isAnyCancellationInProgress ? "Please wait..." : "Dismiss"}
+                              title={isDismissing ? "Dismissing..." : isAnyCancellationInProgress ? "Another cancellation in progress" : "Dismiss"}
                             >
                               {isDismissing ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />

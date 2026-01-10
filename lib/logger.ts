@@ -160,10 +160,7 @@ class MangaConverterLogger {
     // Allow explicit override to keep verbose logs
     if (process.env.NEXT_PUBLIC_VERBOSE_LOGS === 'true') return false
 
-    // Only suppress in production
-    if (process.env.NODE_ENV !== 'production') return false
-
-    // Noisy prefixes we don't want in production consoles
+    // Noisy prefixes we don't want in consoles
     const noisyPrefixes = [
       '[UI] ETA tick',
       '[UI] Reading File progress (ticker)',
@@ -172,6 +169,23 @@ class MangaConverterLogger {
       '[UI] Upload ETA tick',
       '[UI] Uploading progress:',
       '[useSession]',
+      '[MULTIPART]',
+      '[MULTIPART UPLOAD]',
+      '[TIMING]',
+      '[STATUS CHANGE]',
+      '[WEBSOCKET]',
+      '[WebSocket]',
+      '[HomePage]',
+      'Job creation successful',
+      'Job created -',
+      'Job ID callback',
+      'Job ID received successfully',
+      '=== UPLOAD FLOW',
+      'Deferring per-job subscription',
+      'Starting multipart upload',
+      'Waiting for job ID',
+      'POST /jobs response',
+      'Sending POST request to /api/jobs',
     ]
 
     return noisyPrefixes.some((p) => message.startsWith(p))

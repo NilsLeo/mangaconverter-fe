@@ -1054,6 +1054,19 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       return
     }
 
+    // Check if another cancellation is already in progress
+    if (cancellingJobs.size > 0 && !cancellingJobs.has(file.jobId)) {
+      const cancellingJob = Array.from(cancellingJobs)[0]
+      logWarn("[v0] Cancellation blocked: Another cancellation in progress", {
+        requested_job: file.jobId,
+        active_cancellation: cancellingJob,
+      })
+      toast.warning("Please wait", {
+        description: "Another cancellation is in progress. Please wait for it to complete.",
+      })
+      return
+    }
+
     log("[v0] Cancel requested for job:", file.jobId, "file:", file.name)
 
     // Mark job as being cancelled (show spinner)
@@ -1124,6 +1137,25 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       }).finally(() => clearTimeout(timeoutId))
 
       if (!response.ok) {
+        // Handle 429 - another cancellation in progress
+        if (response.status === 429) {
+          const error = await response.json()
+          logWarn("[v0] Cancellation rejected by backend: another cancellation in progress", {
+            job_id: file.jobId,
+            active_job: error.active_job_id,
+          })
+          toast.warning("Please wait", {
+            description: error.message || "Another cancellation is in progress on the server.",
+          })
+          // Don't proceed with UI removal for 429
+          setCancellingJobs((prev) => {
+            const newSet = new Set(prev)
+            newSet.delete(file.jobId!)
+            return newSet
+          })
+          return
+        }
+
         const error = await response.json()
         throw new Error(error.error || "Failed to cancel job")
       }
@@ -1134,6 +1166,13 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
         filename: file.name,
         new_status: data.status,
       })
+
+      // Remove from cancelling state only after backend confirms
+      setCancellingJobs((prev) => {
+        const newSet = new Set(prev)
+        newSet.delete(file.jobId!)
+        return newSet
+      })
     } catch (error) {
       // Log backend errors but don't show to user (job already removed from UI)
       if (error instanceof Error && error.name === "AbortError") {
@@ -1141,8 +1180,7 @@ export function MangaConverter({ contentType }: { contentType: "comic" | "manga"
       } else {
         logError("[v0] Backend cancel failed (job already removed from UI):", error)
       }
-    } finally {
-      // Remove from cancelling state
+      // Remove from cancelling state on error
       setCancellingJobs((prev) => {
         const newSet = new Set(prev)
         newSet.delete(file.jobId!)

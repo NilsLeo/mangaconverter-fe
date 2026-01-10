@@ -28,3 +28,7 @@ yarn-error.log*
 next-env.d.ts
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Sentry
+.sentryclirc
+sentry.properties
