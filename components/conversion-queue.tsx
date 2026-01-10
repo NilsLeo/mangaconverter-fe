@@ -644,7 +644,7 @@ export function ConversionQueue({
               variant="secondary"
               className="uppercase text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-500 border-red-500/20"
             >
-              Converting
+              Queued
             </Badge>
           )
         case "PROCESSING":
@@ -748,27 +748,14 @@ export function ConversionQueue({
     if (!status) return { stage: -1, progress: 0, label: "Ready", eta: null, isError: false }
 
     if (status === "QUEUED") {
-      // Check if upload has been completed (confirmed_percentage is 100)
-      const uploadConfirmed = (file.upload_progress as any)?.confirmed_percentage ?? 0
-
-      if (uploadConfirmed >= 100) {
-        // Upload is complete, show queued at converting stage
-        return {
-          stage: 0.5, // Special stage to indicate queued at converting position
-          progress: 100, // Upload bar should be full
-          label: "Queued",
-          eta: null,
-          isError: false,
-        }
-      } else {
-        // Upload not started or not complete yet, show queued at upload position
-        return {
-          stage: -0.5, // Special stage to indicate queued at upload position
-          progress: 0,
-          label: "Queued",
-          eta: null,
-          isError: false,
-        }
+      // WebSocket emits QUEUED after upload completes and before processing
+      // Always show queued at the converting stage, replacing its icon with a spinner
+      return {
+        stage: 0.5, // queued at converting position
+        progress: 100, // upload visually considered complete
+        label: "Queued",
+        eta: null,
+        isError: false,
       }
     }
 
@@ -997,7 +984,7 @@ export function ConversionQueue({
                   </>
                 ) : (
                   <div
-                    className={`absolute inset-y-0 left-0 ${getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
+                    className={`absolute inset-y-0 left-0 ${displayStage === 1 ? getStageColors(2).dark : getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
                     style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                   />
                 )}
@@ -1145,7 +1132,7 @@ export function ConversionQueue({
                       </>
                     ) : (
                       <div
-                        className={`absolute inset-y-0 left-0 ${getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
+                        className={`absolute inset-y-0 left-0 ${displayStage === 1 ? getStageColors(2).dark : getStageColors(displayStage).dark} rounded-full transition-all duration-500 ease-out`}
                         style={{ width: `${Math.min(100, currentStageProgress)}%` }}
                       />
                     )}
@@ -1534,18 +1521,24 @@ export function ConversionQueue({
                             </Button>
                           )
                         } else if (!isActive && !jobRunning) {
-                          // Not started - Remove button
+                          // Not started - use same Dismiss-style button as converting state, but locally remove from queue
                           return (
                             <Button
                               variant="ghost"
-                              size="icon"
+                              size="sm"
                               onClick={() => onRemoveFile?.(file)}
-                              className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                              aria-label="Remove file"
-                              title="Remove file"
+                              className="
+                                h-9 px-3
+                                text-muted-foreground
+                                hover:text-destructive hover:bg-destructive/10
+                                active:bg-destructive/20
+                                transition-colors duration-150
+                              "
+                              aria-label="Dismiss"
+                              title="Dismiss"
                             >
-                              <X className="h-4 w-4" />
-                              <span className="sr-only">Remove file</span>
+                              <XCircle className="h-4 w-4" />
+                              <span className="hidden sm:inline ml-1.5 text-sm font-medium">Dismiss</span>
                             </Button>
                           )
                         }
